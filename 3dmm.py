@@ -155,8 +155,8 @@ def subdivide(v, f):
     
     # Map from sets of edges to face indices
     edge2face = defaultdict(list)
-    for faceInd, edges in enumerate(face2edge):
-        for edge in edges:
+    for faceInd, edgesOnFace in enumerate(face2edge):
+        for edge in edgesOnFace:
             edge2face[edge].append(faceInd)
     
     # Map from vertices to the faces they're connected to
@@ -173,7 +173,7 @@ def subdivide(v, f):
     
     # Loop thru the vertices of each tester's face to find the new set of vertices
     for tester in range(v.shape[0]):
-        print(tester)
+        print('Calculating new vertices for tester %d' % tester)
         # Face points: the mean of the vertices on a face
         facePt = np.array([np.mean(v[tester, vertexInd, :], axis = 0) for vertexInd in f])
         
@@ -216,7 +216,7 @@ def subdivide(v, f):
         # Save the result
         if tester == 0:
             vNew = np.empty((v.shape[0], facePt.shape[0] + edgePt.shape[0] + newPt.shape[0], 3))
-            print(np.r_[facePt, edgePt, newPt].shape)
+            
         vNew[tester, :, :] = np.r_[facePt, edgePt, newPt]
     
     # Form the new faces
@@ -429,7 +429,7 @@ saveDirName = '/home/nguyen/Documents/Data/facewarehouse/Models/'
 v, f = importObj('./masks/', shape = 0, dataToImport = ['v', 'f'])
 f = f[1, :, :] - 1
 
-vNew, fNew = subdivide(v[0, :, :], f)
+vNew, fNew = subdivide(v, f)
 #vNew2, fNew2 = subdivide(vNew, fNew)
 
 #exportObj(facePt, fNameOut = 'subdivFace.obj')
