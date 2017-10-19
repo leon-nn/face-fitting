@@ -6,22 +6,43 @@ Created on Thu Sep 28 11:43:00 2017
 @author: nguyen
 """
 import numpy as np
+
 # For computing eigenvalues and eigenvectors via eigsh
 from scipy.sparse.linalg import eigsh
+
 # Just-in-time compiler
 from numba import jit
+
 # Regex for extra help with parsing input .obj files
 import re
+
 # For plotting and importing PNG images
 import matplotlib.pyplot as plt
 import matplotlib.image as mpimg
-import scipy.interpolate as intp
+from mpl_toolkits.mplot3d import Axes3D
+#import scipy.interpolate as intp
+
 from time import clock
 import os
 from collections import defaultdict
 from itertools import chain, compress
 
-def importObj(dirName, shape = 0, dataToImport = ['v', 'vt', 'f']):
+from scipy.stats import mode
+
+def onpick3(event):
+    """
+    Interactive clicking for pyplot scatter plots.
+    Example:
+    fig, ax = plt.subplots()
+    x = ...
+    y = ...
+    col = ax.scatter(x, y, s = 1, picker = True)
+    fig.canvas.mpl_connect('pick_event', onpick3)
+    """
+    ind = event.ind
+    print('onpick3 scatter:', ind, np.take(x, ind), np.take(y, ind))
+    
+def importObj(dirName, shape = 0, dataToImport = ['v', 'vt', 'f'], pose = 20):
     """
     Return the geometric and texture vertices along with the quadrilaterials containing the geometric and texture indices for all 150 testers of FaceWarehouse for a certain shape/pose/expression. Input (1) a string for the directory name that contains the folders 'Tester_1' through 'Tester_150', (2) an int for the shape number, which is in the range [0, 46] (1 neutral + 46 expressions), and (3) a list containing strings to indicate what part of the .obj file to read ('v' = geometric vertices, 'vt' = texture vertices, 'f' = face quadrilaterals).
     """
@@ -40,8 +61,9 @@ def importObj(dirName, shape = 0, dataToImport = ['v', 'vt', 'f']):
             dirName += '/'
     
     for i in range(numTesters):
-        if not singleFile:
-#            fName = dirName + 'Tester_' + str(i+1) + '/Blendshape/shape_' + str(shape) + '.obj'
+        if (not singleFile) and pose == 47:
+            fName = dirName + 'Tester_' + str(i+1) + '/Blendshape/shape_' + str(shape) + '.obj'
+        elif (not singleFile) and pose == 20:
             fName = dirName + 'Tester_' + str(i+1) + '/TrainingPose/pose_' + str(shape) + '.obj'
         
         with open(fName) as fd:
@@ -56,6 +78,8 @@ def importObj(dirName, shape = 0, dataToImport = ['v', 'vt', 'f']):
                     vt.append([float(num) for num in line[3:].split(' ')])
                 elif line.startswith('f') and 'f' in dataToImport and i == 0:
                     f.append([int(ind) for ind in re.split('/| ', line[2:])])
+                else:
+                    continue
         
         if i == 0:
             geoV = np.empty((numTesters, len(v), 3))
@@ -86,7 +110,7 @@ def getTexture(dirName, pose = 0):
     Get the RGB values referenced by the texture vertices in the .obj file for each tester. There are 20 poses to choose from from 0 to 19.
     """
     # Import the texture vertices
-    textV = importObj(dirName, pose, dataToImport = ['vt'])[0]
+    textV = importObj(dirName, pose, dataToImport = ['vt'], pose = 20)[0]
     textV[:, 0] *= 639  # Multiply by the max column index
     textV[:, 1] *= 479  # Multiply by the max row index
     
@@ -119,7 +143,7 @@ def PCA(data, numPC = 80):
     
     # Mean (not using np.mean for jit reasons)
     mean = data.sum(axis = 0)/M
-    data -= mean
+    data = data - mean
     
     # Covariance (we don't remove the M scaling factor here to try to avoid floating point errors that could make C unsymmetric)
     C = np.dot(data.T, data)
@@ -173,7 +197,7 @@ def subdivide(v, f):
     
     # Loop thru the vertices of each tester's face to find the new set of vertices
     for tester in range(v.shape[0]):
-        print('Calculating new vertices for tester %d' % tester)
+        print('Calculating new vertices for tester %d' % (tester + 1))
         # Face points: the mean of the vertices on a face
         facePt = np.array([np.mean(v[tester, vertexInd, :], axis = 0) for vertexInd in f])
         
@@ -184,7 +208,7 @@ def subdivide(v, f):
             if len(edge2face[edge]) == 1:
                 edgePt[i, :] = np.mean(v[tester, list(edge), :], axis = 0)
             
-            # Else, the edge point is the mean of (1) the face point of the two faces adjacent to the edge and (2) the midpoint of the vertices defining the edge.
+            # Else, the edge point is the mean of (1) the face points of the two faces adjacent to the edge and (2) the midpoint of the vertices defining the edge.
             else:
                 edgePt[i, :] = np.mean(np.r_[facePt[edge2face[edge], :], v[tester, list(edge), :]], axis = 0)
         
@@ -224,6 +248,67 @@ def subdivide(v, f):
     
     return vNew, fNew
 
+def perspectiveTransformKinect(d, inverse = False):
+    """
+    Transformation between pixel indices (u, v) of depth map to real-world coordinates in mm (x, y) for Kinect v1 depth camera (640x480 resolution). Depth values z are in mm. In the forward direction, go from (u, v, z) to (x, y, z). In the inverse direction, go from (x, y, z) to (u, v, z).
+    """
+    # Mapping from (x, y, z) to (uz, vz, z)
+    real2pixel = np.array([[580.606, 0, 314.758], [0, 580.885, 252.187], [0, 0, 1]])
+    
+    # Mapping from (uz, vz, z) to (x, y, z)
+    pixel2real = np.linalg.inv(real2pixel)
+    
+    # Mark depth values that are non-zero
+    nonZeroZ = d[:, 2] != 0
+    
+    if not inverse:
+        uvz = d[nonZeroZ, :]
+        uzvzz = np.c_[np.prod(uvz[:, ::2], axis = 1), np.prod(uvz[:, 1:], axis = 1), uvz[:, 2]]
+        xyz = np.dot(pixel2real, uzvzz.T).T
+        
+        return xyz, nonZeroZ
+    
+    else:
+        xyz = d[nonZeroZ, :]
+        uzvzz = np.dot(real2pixel, xyz.T).T
+        uvz = np.c_[uzvzz[:, 0] / xyz[:, 2], uzvzz[:, 1] / xyz[:, 2], xyz[:, 2]]
+        
+        return uvz, nonZeroZ
+
+def initialRegistration(A, B):
+    """
+    Find the rotation matrix R, translation vector t, and scaling factor s to reconstruct the 3D vertices of the target B from the source A as B' = s*R*A.T + t.
+    """
+    
+    # Find centroids of A and B landmarks and move them to the origin
+    muA = np.mean(A, axis = 0)
+    muB = np.mean(B, axis = 0)
+    A = A - muA
+    B = B - muB
+    
+    # Find scale factor for source to match target face size
+    normA = np.linalg.norm(A, axis = 1).sum()
+    normB = np.linalg.norm(B, axis = 1).sum()
+    s = normB/normA
+    A = s*A
+    
+    # Calculate the rotation matrix R. Note that the returned V is actually V.T.
+    U, V = np.linalg.svd(np.dot(A.T, B))[::2]
+    R = np.dot(V.T, U.T)
+    
+    # Flip sign on the third column of R if it is a reflectance matrix
+    if np.linalg.det(R) < 0:
+        R[:, 2] *= -1
+    
+    # Find the translation vector
+    t = -np.dot(R, muA) + muB
+    
+    # Reconstruct B from A and find the MSE
+    reconB = np.dot(R, A.T).T
+    MSE = np.linalg.norm(B - reconB, axis = 1)
+    
+    return R, t, s, MSE
+
 @jit
 def processShapes(dirName, saveDirName):
     """
@@ -231,7 +316,7 @@ def processShapes(dirName, saveDirName):
     """
     for shape in range(47):
         # Read the 'v' coordinates from an .obj file into a NumPy array
-        geoV = importObj(dirName, shape, dataToImport = ['v'])[0]
+        geoV = importObj(dirName, shape, dataToImport = ['v'], pose = 47)[0]
         
         # Reshape the coordinates so that observations are along the rows
         geoV = np.reshape(geoV, (150, 11510*3))
@@ -264,14 +349,14 @@ def processTextures(dirName, saveDirName):
         np.save(saveDirName + 'pose' + str(pose) + 'eigVecT', eigVec)
         np.save(saveDirName + 'pose' + str(pose) + 'meanT', mean)
 
-def writeShape(mean, eigVec, a = None, fNameOut = 'test.obj'):
+def writeShape(mean, eigVec, fNameIn = None, f = None, a = None, fNameOut = 'test.obj'):
     """
     Given a mean face shape, the eigenvectors, and eigenvector parameters a, write a new face shape out to an .obj file.
     """
-    # Template .obj file to read from
-    fNameIn = 'objTemplate.obj'
     
     # Add the .obj extension if necessary
+    if not fNameIn.endswith('.obj'):
+        fNameIn += '.obj'
     if not fNameOut.endswith('.obj'):
         fNameOut += '.obj'
     
@@ -288,24 +373,37 @@ def writeShape(mean, eigVec, a = None, fNameOut = 'test.obj'):
     # Reshape so that each vertex is in its own row
     S = np.reshape(S,(N//3, 3))
     
-    with open(fNameIn, 'r') as fi:
-        with open(fNameOut, 'w') as fo:
-            # Initialize counter for the vertex index
-            vertexInd = 0
+    if fNameIn is not None and f is None:
+        with open(fNameIn, 'r') as fi:
+            with open(fNameOut, 'w') as fo:
+                # Initialize counter for the vertex index
+                vertexInd = 0
+                
+                # Iterate through the lines in the template file
+                for line in fi:
+                    # If a line starts with 'v ', then we replace it with the vertex coordinate with the index corresponding to the line number
+                    if line.startswith('v '):
+                        # Keep 6 digits after the decimal to follow the formatting in the template file
+                        fo.write('v ' + '{:.6f}'.format(S[vertexInd, 0]) + ' ' + '{:.6f}'.format(S[vertexInd, 1]) + ' ' + '{:.6f}'.format(S[vertexInd, 2]) + '\n')
+                        
+                        # Increment the vertex index counter
+                        vertexInd += 1
+                        
+                    # Else, the line must end with 'vt' or 'f', so we copy from the template file because those coordinates are in correspondence
+                    elif line.startswith('vt') or line.startswith('f'):
+                        fo.write(line)
+                    
+                    else:
+                        continue
+    
+    # If a face variable is provided
+    elif fNameIn is None and f is not None:
+        with open (fNameOut, 'w') as fo:
+            for vertex in S:
+                fo.write('v ' + '{:.6f}'.format(vertex[0]) + ' ' + '{:.6f}'.format(vertex[1]) + ' ' + '{:.6f}'.format(vertex[2]) + '\n')
             
-            # Iterate through the lines in the template file
-            for line in fi:
-                # If a line starts with 'v ', then we replace it with the vertex coordinate with the index corresponding to the line number
-                if line.startswith('v '):
-                    # Keep 6 digits after the decimal to follow the formatting in the template file
-                    fo.write('v ' + '{:.6f}'.format(S[vertexInd, 0]) + ' ' + '{:.6f}'.format(S[vertexInd, 1]) + ' ' + '{:.6f}'.format(S[vertexInd, 2]) + '\n')
-                    
-                    # Increment the vertex index counter
-                    vertexInd += 1
-                    
-                # Else, the line must end with 'vt' or 'f', so we copy from the template file because those coordinates are in correspondence
-                else:
-                    fo.write(line)
+            for face in f:
+                fo.write('f ' + str(face[0]) + ' ' + str(face[1]) + ' ' + str(face[2]) + ' ' + str(face[3]) + '\n')
 
 def exportObj(v, vt = None, f = None, fNameIn = None, fNameOut = 'test.obj'):
     """
@@ -342,9 +440,12 @@ def exportObj(v, vt = None, f = None, fNameIn = None, fNameOut = 'test.obj'):
                     elif line.startswith('vt'):
                         fo.write(line)
                     
-                    else:
+                    elif line.startswith('f'):
                         f = [int(ind) for ind in re.split('/| ', line[2:])]
                         fo.write('f ' + str(f[0]) + '/' + str(f[1]) + '/0 ' + str(f[3]) + '/' + str(f[4]) + '/0 ' + str(f[6]) + '/' + str(f[7]) + '/0 ' + str(f[9]) + '/' + str(f[10]) + '/0\n')
+                    
+                    else:
+                        continue
         
     else:
         with open(fNameOut, 'w') as fo:
@@ -356,86 +457,211 @@ def exportObj(v, vt = None, f = None, fNameIn = None, fNameOut = 'test.obj'):
                     fo.write('vt ' + '{:.6f}'.format(text[0]) + ' ' + '{:.6f}'.format(text[1]) + '\n')
             
             if f is not None:
-                if vt is None:
+                if f.shape[1] == 4:
                     for face in f:
                         fo.write('f ' + str(face[0]) + ' ' + str(face[1]) + ' ' + str(face[2]) + ' ' + str(face[3]) + '\n')
-                        
-def saveMasks(dirName, saveDirName = './masks', mask = 'faceMask.obj'):
+                elif f.shape[1] == 3:
+                    for face in f:
+                        fo.write('f ' + str(face[0]) + ' ' + str(face[1]) + ' ' + str(face[2]) + '\n')
+
+def saveLandmarks(dirName, saveDirName = './'):
+    """
+    Read the landmarks from the TrainingPoses and save them in a .npy file.
+    """
+    if not dirName.endswith('/'):
+        dirName += '/'
+    if not saveDirName.endswith('/'):
+        saveDirName += '/'
+        
+    landmarks = np.empty((20, 150, 74, 2))
+    for pose in range(20):
+        for tester in range(150):
+            fName = 'Tester_' + str(tester+1) + '/TrainingPose/pose_' + str(pose) + '.land'
+            with open(dirName + fName, 'r') as fd:
+                next(fd)
+                landmarks[pose, tester, :, :] = np.array([[float(num) for num in line.split(' ')] for line in fd])
+    
+    np.save(saveDirName + 'landmarksTrainingPoses', landmarks)
+
+def saveDepthMaps(dirName, saveDirName = './'):
+    """
+    Read the depth information from the Kinect .poses files and save them in a .npy file.
+    """
+    if not dirName.endswith('/'):
+        dirName += '/'
+    if not saveDirName.endswith('/'):
+        saveDirName += '/'
+        
+    depth = np.empty((20, 150, 480, 640), dtype = 'uint16')
+    for pose in range(20):
+        for tester in range(150):
+            fName = 'Tester_' + str(tester+1) + '/TrainingPose/pose_' + str(pose) + '.poses'
+            with open(dirName + fName, 'rb') as fd:
+                # First 4 bytes contain the frame number, and the next 640*480*3 contain the RGB data, so skip these
+                fd.seek(4 + 1*640*480*3)
+                
+                # Each depth map value is 2 bytes (short)
+                d = fd.read(2*640*480)
+            
+            # Convert bytes to int
+            depth[pose, tester, :, :] = np.array([int.from_bytes(bytes([x, y]), byteorder = 'little') for x, y in zip(d[0::2], d[1::2])]).reshape((480, 640))
+            
+    np.save(saveDirName + 'depthMaps', depth)
+
+def saveMasks(dirName, saveDirName = './masks/', mask = 'faceMask.obj', poses = 20):
     """
     Loop through the original 3D head models in the directory defined by dirName and extract the facial area defined by mask .obj file, saving the facial 3D models of the original 3D heads into new .obj files in the directory defined by saveDirName.
     """
+    if not saveDirName.endswith('/'):
+        saveDirName += '/'
+        
     # Loop through the poses/shapes
-    for shape in range(20):
+    for shape in range(poses):
         # The reference mask defining the facial region is based off of the first tester in pose/shape 0
         if shape == 0:
-            v = importObj(dirName, shape, dataToImport = ['v'])[0]
+            v = importObj(dirName, shape, dataToImport = ['v'], pose = poses)[0]
             faceMask = importObj(mask, shape = 0)[0]
             idx = np.zeros(faceMask.shape[0], dtype = int)
             for i, vertex in enumerate(faceMask):
                 idx[i] = np.where(np.equal(vertex, v[0, :, :]).all(axis = 1))[0]
         else:
-            v = importObj(dirName, shape, dataToImport = ['v'])[0]
+            v = importObj(dirName, shape, dataToImport = ['v'], pose = poses)[0]
         
         v = v[:, idx, :]
         
         for tester in range(150):
-    #        if not os.path.exists(saveDirName + 'Tester_' + str(tester+1) + '/Blendshape/'):
-    #            os.makedirs(saveDirName + 'Tester_' + str(tester+1) + '/Blendshape/')
-    #            
-    #        fName = saveDirName + 'Tester_' + str(tester+1) + '/Blendshape/shape_' + str(shape) + '.obj'
+            print('Processing shape %d for tester %d' % (shape+1, tester+1))
+            if poses == 47:
+                if not os.path.exists(saveDirName + 'Tester_' + str(tester+1) + '/Blendshape/'):
+                    os.makedirs(saveDirName + 'Tester_' + str(tester+1) + '/Blendshape/')
+                fName = saveDirName + 'Tester_' + str(tester+1) + '/Blendshape/shape_' + str(shape) + '.obj'
             
-            if not os.path.exists(saveDirName + 'Tester_' + str(tester+1) + '/TrainingPose/'):
-                os.makedirs(saveDirName + 'Tester_' + str(tester+1) + '/TrainingPose/')
-            fName = saveDirName + 'Tester_' + str(tester+1) + '/TrainingPose/pose_' + str(shape) + '.obj'
+            if poses == 20:
+                if not os.path.exists(saveDirName + 'Tester_' + str(tester+1) + '/TrainingPose/'):
+                    os.makedirs(saveDirName + 'Tester_' + str(tester+1) + '/TrainingPose/')
+                fName = saveDirName + 'Tester_' + str(tester+1) + '/TrainingPose/pose_' + str(shape) + '.obj'
             
-            exportObj(v[tester, :, :], fNameIn = 'mask.obj', fNameOut = fName)
+            exportObj(v[tester, :, :], fNameIn = mask, fNameOut = fName)
             
             
 dirName = '/home/nguyen/Documents/Data/facewarehouse/FaceWarehouse_Data_0/'
-saveDirName = '/home/nguyen/Documents/Data/facewarehouse/Models/'
-
-#geoV = importObj(dirName, shape = 0)[2]
-#geoV = np.reshape(geoV, (150, 11510*3))
-#textV = np.reshape(textV, (150, 11558*2))
+#saveDirName = '/home/nguyen/Documents/Data/facewarehouse/Models/'
 
 #start = clock()
 
 #elapsed = (clock() - start)
-
-#mean = np.load(saveDirName + 'shape0meanS.npy')
-#eigVec = np.load(saveDirName + 'shape0eigVecS.npy')
-#fNameOut = 'test.obj'
-#writeShape(mean, eigVec, a = np.r_[0, 10, np.zeros(78)])
         
 #vt, f = importObj(dirName, shape = 0, dataToImport = ['vt', 'f'])
 #plt.scatter(vt[:, 0], vt[:, 1], s = 1)
 
-#numTesters = 150
-#land = np.empty((150, 74, 2))
-#pose = 0
-#for i in range(numTesters):
-#    fName = dirName + 'Tester_' + str(i + 1) + '/TrainingPose/pose_' + str(pose) + '.land'
-#    with open(fName, 'r') as fd:
-#        l = []
-#        next(fd)
-#        for line in fd:
-#            l.append([float(coord) for coord in line.split(' ')])
-#    land[i, :, :] = np.array(l)
-#plt.scatter(l[:, 0], l[:, 1], s = 1)
-#axes = plt.gca()
-#axes.set_xlim([0, 1])
-#axes.set_ylim([0, 1])
+# Use a template mask to extract the facial region from the 3D models
+#saveMasks(dirName, saveDirName = './masks2v2/', mask = 'mask2v2.obj', poses = 20)
 
-v, f = importObj('./masks/', shape = 0, dataToImport = ['v', 'f'])
-f = f[1, :, :] - 1
+#v, f = importObj('./masks2v2/', shape = 0, dataToImport = ['v', 'f'])
+#f = f[0, :, :] - 1
 
-vNew, fNew = subdivide(v, f)
-#vNew2, fNew2 = subdivide(vNew, fNew)
+#vNew, fNew = subdivide(v, f)
+#vNew = np.reshape(vNew, (150, 22770*3))
+            
+#v = np.reshape(v, (150, 5760*3))
+#start = clock()
+#evalNeu, evecNeu, meanNeu = PCA(v)
+#print(clock() - start)
+#np.save('./neuEval', evalNeu)
+#np.save('./neuEvec', evecNeu)
+#np.save('./neuMean', meanNeu)
 
-#exportObj(facePt, fNameOut = 'subdivFace.obj')
-#exportObj(edgePt, fNameOut = 'subdivEdge.obj')
-#exportObj(newPt, fNameOut = 'subdivNew.obj')
-#exportObj(vNew, f = fNew, fNameOut = 'subdivTest.obj')
+#meanS = np.load('./vshape0meanS.npy')
+
+#f += 1
+#fTri = np.r_[f[:, [0, 1, 2]], f[:, [0, 2, 3]]]
+#exportObj(meanS.reshape((5760, 3)), f = fTri, fNameOut = 'meanTri.obj')
+
+#vExp = np.empty((150*46, 5760*3))
+#for s in range(46):
+#    print('Loading expression %d' % (s+1))
+#    temp = importObj('./masks2v2/', shape = s+1, dataToImport = ['v'], pose = 47)[0]
+#    vExp[s*150: (s+1)*150, :] = np.reshape(temp, (150, 5760*3))
+#
+#start = clock()
+#evalExp, evecExp, meanExp = PCA(vExp, numPC = 76)
+#print(clock() - start)
+#
+#np.save('./expEvalBS', evalExp)
+#np.save('./expEvecBS', evecExp)
+#np.save('./expMeanBS', meanExp)
+
+#coef = np.zeros((76))
+#coef[75] = 1
+#writeShape(meanExp, evecExp, fNameIn = './mask2v2.obj', a = coef, fNameOut = './expTest.obj')
+
+#exportObj(meanExp.reshape((17280//3, 3)), fNameIn = './mask2v2.obj', fNameOut = 'meanExp.obj')
+
+#vNeu = importObj('./masks2v2/', shape = 0, dataToImport = ['v'])[0]
+#vNeu = np.reshape(vNeu, (150, 5760*3))
+#
+#vExp = importObj('./masks2v2/', shape = 1, dataToImport = ['v'])[0]
+#vExp = np.reshape(vExp, (150, 5760*3))
+#
+#S = vNeu[0, :] + (vExp[1, :] - vNeu[1, :])
+#S = np.reshape(S, (17280//3, 3))
+#exportObj(S, fNameIn = 'mask2v2.obj', fNameOut = 'testExp.obj')
+
+# Load 3D landmarks and find their vertex indices
+v = importObj('./mask2v2.obj', shape = 0, dataToImport = ['v'])[0]
+landmarks3D = importObj('./landmarks.obj', shape = 0, dataToImport = ['v'])[0]
+landmarks3D = landmarks3D[[7, 4, 3, 2, 11, 12, 15, 5, 6, 13, 14, 0, 10, 9, 8, 1]]
+landmarkInds3D = [np.where(np.isin(v, landmark).any(axis = 1))[0][0] for landmark in landmarks3D]
+
+#fig, ax = plt.subplots()
+#x = landmarks3D[:, 0]
+#y = landmarks3D[:, 1]
+#ax.scatter(x, y, s = 1, picker = True)
+#fig.canvas.mpl_connect('pick_event', onpick3)
+
+# Gather 2D landmarks that correspond to manually chosen 3D landmarks
+landmarks = np.load('landmarks2D.npy')
+landmarkInds2D = [0, 1, 4, 7, 10, 13, 14, 27, 29, 31, 33, 46, 49, 52, 55, 65]
+landmarks16 = landmarks[:, :, landmarkInds2D, :]
+
+# Find pixel indices nearest to the landmark locations
+landmarks16NN = np.empty(landmarks16.shape, dtype = int)
+landmarks16NN[:, :, :, 0] = landmarks16[:, :, :, 0]*639
+landmarks16NN[:, :, :, 1] = (1 - landmarks16[:, :, :, 1])*479
+
+# Confirm that 16 2D landmarks are in correspondence across poses and testers
+pose = 0
+tester = 0
+#fName = dirName + 'Tester_' + str(tester+1) + '/TrainingPose/pose_' + str(pose) + '.png'
+#img = mpimg.imread(fName)
+#plt.imshow(img)
+#plt.hold(True)
+##x = landmarks16[pose, tester, :, 0]
+##y = landmarks16[pose, tester, :, 1]
+##plt.scatter(x*640, (1-y)*480, s = 1)
+#x = landmarks16NN[pose, tester, :, 0]
+#y = landmarks16NN[pose, tester, :, 1]
+#plt.scatter(x, y, s = 1, c = 'r')
+#
+#fig, ax = plt.subplots()
+#plt.imshow(depth[pose, tester, :, :].astype(float))
+#plt.hold(True)
+#x = landmarks16NN[pose, tester, :, 0]
+#y = landmarks16NN[pose, tester, :, 1]
+#ax.scatter(x, y, s = 1, c = 'r', picker = True)
+#fig.canvas.mpl_connect('pick_event', onpick3)
+
+# Get target 3D coordinates of depth maps at the 16 landmark locations
+depth = np.load('depthMaps.npy')
+vDepth = np.empty((20, 150, 16, 3), dtype = 'uint16')
+for pose in range(20):
+    for tester in range(150):
+        vDepth[pose, tester, :, :2] = landmarks16NN[pose, tester, :, :]
+        vDepth[pose, tester, :, 2] = depth[pose, tester, landmarks16NN[pose, tester, :, 1], landmarks16NN[pose, tester, :, 0]]
+
+targetLandmarks, nonZeroDepth = perspectiveTransformKinect(vDepth[pose, tester, :, :])
+
+R, t, s, MSE = initialRegistration(landmarks3D[nonZeroDepth, :], targetLandmarks)
 
 """
 Some stuff for spherical harmonic illumination model that will be developed
