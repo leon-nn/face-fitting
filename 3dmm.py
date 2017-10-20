@@ -29,6 +29,8 @@ from itertools import chain, compress
 
 from scipy.stats import mode
 
+import scipy.optimize as spopt
+
 def onpick3(event):
     """
     Interactive clicking for pyplot scatter plots.
@@ -248,6 +250,35 @@ def subdivide(v, f):
     
     return vNew, fNew
 
+def rotMat2angle(R):
+    """
+    Conversion between 3x3 rotation matrix and Euler angles psi, theta, and phi in radians (rotations about the x, y, and z axes, respectively). If the input is 3x3, then the output will return a size-3 array containing psi, theta, and phi. If the input is a size-3 array, then the output will return the 3x3 rotation matrix.
+    """
+    if R.shape == (3, 3):
+        if abs(R[2, 0]) != 1:
+            theta = -np.arcsin(R[2, 0])
+            psi = np.arctan2(R[2, 1]/np.cos(theta), R[2, 2]/np.cos(theta))
+            phi = np.arctan2(R[1, 0]/np.cos(theta), R[0, 0]/np.cos(theta))
+        else:
+            phi = 0
+            if R[2, 0] == -1:
+                theta = np.pi/2
+                psi = np.arctan2(R[0, 1], R[0, 2])
+            else:
+                theta = -np.pi/2
+                psi = np.arctan2(-R[0, 1], -R[0, 2])
+        
+        return np.array([psi, theta, phi])
+    
+    elif R.shape == (3,):
+        psi, theta, phi = R
+        Rx = np.array([[1, 0, 0], [0, np.cos(psi), -np.sin(psi)], [0, np.sin(psi), np.cos(psi)]])
+        Ry = np.array([[np.cos(theta), 0, np.sin(theta)], [0, 1, 0], [-np.sin(theta), 0, np.cos(theta)]])
+        Rz = np.array([[np.cos(phi), -np.sin(phi), 0], [np.sin(phi), np.cos(phi), 0], [0, 0, 1]])
+        
+        return np.dot(Rz, np.dot(Ry, Rx))
+
+@jit
 def perspectiveTransformKinect(d, inverse = False):
     """
     Transformation between pixel indices (u, v) of depth map to real-world coordinates in mm (x, y) for Kinect v1 depth camera (640x480 resolution). Depth values z are in mm. In the forward direction, go from (u, v, z) to (x, y, z). In the inverse direction, go from (x, y, z) to (u, v, z).
@@ -275,6 +306,7 @@ def perspectiveTransformKinect(d, inverse = False):
         
         return uvz, nonZeroZ
 
+@jit
 def initialRegistration(A, B):
     """
     Find the rotation matrix R, translation vector t, and scaling factor s to reconstruct the 3D vertices of the target B from the source A as B' = s*R*A.T + t.
@@ -286,12 +318,6 @@ def initialRegistration(A, B):
     A = A - muA
     B = B - muB
     
-    # Find scale factor for source to match target face size
-    normA = np.linalg.norm(A, axis = 1).sum()
-    normB = np.linalg.norm(B, axis = 1).sum()
-    s = normB/normA
-    A = s*A
-    
     # Calculate the rotation matrix R. Note that the returned V is actually V.T.
     U, V = np.linalg.svd(np.dot(A.T, B))[::2]
     R = np.dot(V.T, U.T)
@@ -299,15 +325,17 @@ def initialRegistration(A, B):
     # Flip sign on the third column of R if it is a reflectance matrix
     if np.linalg.det(R) < 0:
         R[:, 2] *= -1
+        
+    # Find scale factor
+    s = np.trace(np.dot(B.T, np.dot(A, R.T))) / np.trace(np.dot(A.T, A))
     
     # Find the translation vector
-    t = -np.dot(R, muA) + muB
+    t = -s*np.dot(R, muA) + muB
     
-    # Reconstruct B from A and find the MSE
-    reconB = np.dot(R, A.T).T
-    MSE = np.linalg.norm(B - reconB, axis = 1)
+    # Find Euler angles underlying rotation matrix
+    angle = rotMat2angle(R)
     
-    return R, t, s, MSE
+    return np.r_[angle, t, s]
 
 @jit
 def processShapes(dirName, saveDirName):
@@ -348,6 +376,42 @@ def processTextures(dirName, saveDirName):
         np.save(saveDirName + 'pose' + str(pose) + 'eigValT', eigVal)
         np.save(saveDirName + 'pose' + str(pose) + 'eigVecT', eigVec)
         np.save(saveDirName + 'pose' + str(pose) + 'meanT', mean)
+
+def generateModels(dirName, saveDirName = './'):
+    """
+    Generate eigenmodels of face meshes for (1) the neutral face and (2) the expressions. Save eigenvectors, eigenvalues, and means into .npy arrays.
+    """
+    if not dirName.endswith('/'):
+        dirName += '/'
+    if not saveDirName.endswith('/'):
+        saveDirName += '/'
+        
+    # Neutral face
+    print('Loading neutral faces')
+    v = importObj(dirName, shape = 0, dataToImport = ['v'])[0]
+    v = np.reshape(v, (150, v.shape[1]*3))
+    start = clock()
+    evalNeu, evecNeu, meanNeu = PCA(v)
+    print(clock() - start)
+    
+    np.save(saveDirName + 'neuEval', evalNeu)
+    np.save(saveDirName + 'neuEvec', evecNeu)
+    np.save(saveDirName + 'neuMean', meanNeu)
+    
+    # Expressions (from the 46 expression blendshapes)
+    vExp = np.empty((150*46, v.shape[1]))
+    for s in range(46):
+        print('Loading expression %d' % (s+1))
+        temp = importObj(dirName, shape = s+1, dataToImport = ['v'], pose = 47)[0]
+        vExp[s*150: (s+1)*150, :] = np.reshape(temp, (150, v.shape[1]))
+    
+    start = clock()
+    evalExp, evecExp, meanExp = PCA(vExp, numPC = 76)
+    print(clock() - start)
+    
+    np.save(saveDirName + 'expEvalBS', evalExp)
+    np.save(saveDirName + 'expEvecBS', evecExp)
+    np.save(saveDirName + 'expMeanBS', meanExp)
 
 def writeShape(mean, eigVec, fNameIn = None, f = None, a = None, fNameOut = 'test.obj'):
     """
@@ -557,39 +621,17 @@ dirName = '/home/nguyen/Documents/Data/facewarehouse/FaceWarehouse_Data_0/'
 # Use a template mask to extract the facial region from the 3D models
 #saveMasks(dirName, saveDirName = './masks2v2/', mask = 'mask2v2.obj', poses = 20)
 
+# Subdivision
 #v, f = importObj('./masks2v2/', shape = 0, dataToImport = ['v', 'f'])
 #f = f[0, :, :] - 1
-
 #vNew, fNew = subdivide(v, f)
-#vNew = np.reshape(vNew, (150, 22770*3))
-            
-#v = np.reshape(v, (150, 5760*3))
-#start = clock()
-#evalNeu, evecNeu, meanNeu = PCA(v)
-#print(clock() - start)
-#np.save('./neuEval', evalNeu)
-#np.save('./neuEvec', evecNeu)
-#np.save('./neuMean', meanNeu)
 
+# Convert quad faces to tri faces
 #meanS = np.load('./vshape0meanS.npy')
-
 #f += 1
 #fTri = np.r_[f[:, [0, 1, 2]], f[:, [0, 2, 3]]]
 #exportObj(meanS.reshape((5760, 3)), f = fTri, fNameOut = 'meanTri.obj')
 
-#vExp = np.empty((150*46, 5760*3))
-#for s in range(46):
-#    print('Loading expression %d' % (s+1))
-#    temp = importObj('./masks2v2/', shape = s+1, dataToImport = ['v'], pose = 47)[0]
-#    vExp[s*150: (s+1)*150, :] = np.reshape(temp, (150, 5760*3))
-#
-#start = clock()
-#evalExp, evecExp, meanExp = PCA(vExp, numPC = 76)
-#print(clock() - start)
-#
-#np.save('./expEvalBS', evalExp)
-#np.save('./expEvecBS', evecExp)
-#np.save('./expMeanBS', meanExp)
 
 #coef = np.zeros((76))
 #coef[75] = 1
@@ -607,11 +649,116 @@ dirName = '/home/nguyen/Documents/Data/facewarehouse/FaceWarehouse_Data_0/'
 #S = np.reshape(S, (17280//3, 3))
 #exportObj(S, fNameIn = 'mask2v2.obj', fNameOut = 'testExp.obj')
 
+# Load neutral face eigenmodel
+neuEvec = np.load('./neuEvec.npy')
+neuEval = np.load('./neuEval.npy')
+neuMean = np.load('./neuMean.npy')
+neuMean = np.reshape(neuMean, (neuMean.size//3, 3))
+
+# Load 3D vertex indices of landmarks and find their vertices on the neutral face
+landmarkInds3D = np.load('./landmarkInds3D.npy')
+
+pose = 0
+tester = 0
+
+# Gather 2D landmarks that correspond to manually chosen 3D landmarks
+landmarkInds2D = np.array([0, 1, 4, 7, 10, 13, 14, 27, 29, 31, 33, 46, 49, 52, 55, 65])
+landmarks = np.load('landmarks2D.npy')[pose, tester, landmarkInds2D, :]
+landmarkPixelInd = (landmarks * np.array([639, 479])).astype(int)
+landmarkPixelInd[:, 1] = 479 - landmarkPixelInd[:, 1]
+
+# Get target 3D coordinates of depth maps at the 16 landmark locations
+depth = np.load('depthMaps.npy')[pose, tester, :, :]
+
+targetLandmark, nonZeroDepth = perspectiveTransformKinect(np.c_[landmarkPixelInd[:, 0], landmarkPixelInd[:, 1], depth[landmarkPixelInd[:, 1], landmarkPixelInd[:, 0]]])
+
+target = perspectiveTransformKinect(np.c_[np.tile(np.arange(640), 480), np.repeat(np.arange(480), 640), depth.flatten()])[0]
+
+#plt.imshow(depth[pose, tester, :, :])
+
+#plt.figure()
+#plt.scatter(targetLandmark[:, 0], targetLandmark[:, 1], s=1)
+#plt.figure()
+#plt.scatter(target[:, 0], target[:, 1], s=1)
+
+# Initiate parameters
+alpha = np.zeros(neuEval.shape)
+alpha[0] = 1
+
+# Do initial registration between the 16 corresponding landmarks on the depth map and the face model
+source = neuMean + np.dot(neuEvec, alpha).reshape((neuEvec.shape[0]//3, 3))
+
+rho = initialRegistration(source[landmarkInds3D[nonZeroDepth], :], targetLandmark)
+
+source = rho[6]*np.dot(neuMean + np.dot(neuEvec, alpha).reshape((neuEvec.shape[0]//3, 3)), rotMat2angle(rho[:3]).T) + rho[3: 6]
+
+def cost(target, sourceMean, sourceEvec, sourceEval, targetLandmarks, sourceLandmarkInds, coef):
+    """
+    Energy function to be minimized for fitting.
+    """
+    # Shape eigenvector coefficients
+    alpha = coef[: 80]
+    
+    # Rotation Euler angles, translation vector, scaling factor
+    rho = coef[80: ]
+    
+    # Choose the depth values from the target that are the nearest neighbors to each vertex on the neutral face model
+    source = rho[6]*np.dot(sourceMean + np.dot(sourceEvec, alpha).reshape((sourceEvec.shape[0]//3, 3)), rotMat2angle(rho[:3]).T) + rho[3: 6]
+    
+#    minDistance = np.empty((source.shape[0]))
+    targetNN = np.empty((source.shape))
+    for i in range(source.shape[0]):
+        distances = np.linalg.norm(target - source[i, :], axis = 1)
+        
+#        minDistance[i] = distances.min()
+        targetNN[i, :] = target[distances.argmin(), :]
+        
+        # Toss out target values that are beyond 400mm from a vertex on the face model because the max face length for humans is about 300mm.
+        target = target[distances < 400, :]
+    
+    # Calculate energy/cost of vertex points
+    costVertexPoints = np.linalg.norm(targetNN - source, axis = 1).sum()
+    
+    # Calculate energy/cost of feature points (landmarks)
+    costFeaturePoints = np.linalg.norm(targetLandmarks - source[sourceLandmarkInds, :], axis = 1).sum()
+    
+    # Calculate -log-probability of alpha (eigenvector coefficients)
+    alphaLogProb = np.sum(alpha ** 2 / sourceEval)
+    
+    return costVertexPoints + costFeaturePoints + alphaLogProb
+
+#x0 = coef
+#
+#spopt.fmin(func, x0, args=(), xtol=0.0001, ftol=0.0001, maxiter=None, maxfun=None, full_output=0, disp=1, retall=0, callback=None, initial_simplex=None)
+#
+#spopt.fmin_ncg(cost, x0, fprime, fhess_p=None, fhess=None, args=(), avextol=1e-05, epsilon=1.4901161193847656e-08, maxiter=None, full_output=0, disp=1, retall=0, callback=None)
+#
+exportObj(target, fNameOut = 'target.obj') 
+exportObj(targetLandmark, fNameOut = 'targetLandmark.obj')
+exportObj(source, fNameIn = './mask2v2.obj', fNameOut = 'source.obj')
+
+"""
+Some stuff for spherical harmonic illumination model that will be developed
+"""
+#k = np.array([np.sqrt(np.pi)/2, np.sqrt(np.pi/3), 2*np.pi*np.sqrt(5/(4*np.pi))/8])
+#norm = np.array([np.sqrt((4*np.pi)), np.sqrt((4*np.pi)/3), np.sqrt((4*np.pi)/5)])
+#Y = np.array([
+#        1/np.sqrt(4*np.pi),                     # Y00
+#        np.sqrt(3/(4*np.pi))*z,                 # Y10
+#        np.sqrt(3/(4*np.pi))*x,                 # Y11e
+#        np.sqrt(3/(4*np.pi))*y,                 # Y11o
+#        1/2*np.sqrt(5/(4*np.pi))*(3*z^2 - 1),   # Y20
+#        3*np.sqrt(5/(12*np.pi))*x*z,            # Y21e
+#        3*np.sqrt(5/(12*np.pi))*y*z,            # Y21o
+#        3/2*np.sqrt(5/(12*np.pi))*(x^2 - y^2),  # Y22e
+#        3*np.sqrt(5/(12*np.pi))*x*y])           # Y22o
+
 # Load 3D landmarks and find their vertex indices
-v = importObj('./mask2v2.obj', shape = 0, dataToImport = ['v'])[0]
-landmarks3D = importObj('./landmarks.obj', shape = 0, dataToImport = ['v'])[0]
-landmarks3D = landmarks3D[[7, 4, 3, 2, 11, 12, 15, 5, 6, 13, 14, 0, 10, 9, 8, 1]]
-landmarkInds3D = [np.where(np.isin(v, landmark).any(axis = 1))[0][0] for landmark in landmarks3D]
+#v = importObj('./mask2v2.obj', shape = 0, dataToImport = ['v'])[0]
+#landmarks3D = importObj('./landmarks.obj', shape = 0, dataToImport = ['v'])[0]
+#landmarks3D = landmarks3D[[7, 4, 3, 2, 11, 12, 15, 5, 6, 13, 14, 0, 10, 9, 8, 1]]
+#landmarkInds3D = [np.where(np.isin(v, landmark).any(axis = 1))[0][0] for landmark in landmarks3D]
+#np.save('./landmarkInds3D', landmarkInds3D)
 
 #fig, ax = plt.subplots()
 #x = landmarks3D[:, 0]
@@ -619,19 +766,9 @@ landmarkInds3D = [np.where(np.isin(v, landmark).any(axis = 1))[0][0] for landmar
 #ax.scatter(x, y, s = 1, picker = True)
 #fig.canvas.mpl_connect('pick_event', onpick3)
 
-# Gather 2D landmarks that correspond to manually chosen 3D landmarks
-landmarks = np.load('landmarks2D.npy')
-landmarkInds2D = [0, 1, 4, 7, 10, 13, 14, 27, 29, 31, 33, 46, 49, 52, 55, 65]
-landmarks16 = landmarks[:, :, landmarkInds2D, :]
-
-# Find pixel indices nearest to the landmark locations
-landmarks16NN = np.empty(landmarks16.shape, dtype = int)
-landmarks16NN[:, :, :, 0] = landmarks16[:, :, :, 0]*639
-landmarks16NN[:, :, :, 1] = (1 - landmarks16[:, :, :, 1])*479
-
 # Confirm that 16 2D landmarks are in correspondence across poses and testers
-pose = 0
-tester = 0
+#pose = 0
+#tester = 0
 #fName = dirName + 'Tester_' + str(tester+1) + '/TrainingPose/pose_' + str(pose) + '.png'
 #img = mpimg.imread(fName)
 #plt.imshow(img)
@@ -650,31 +787,3 @@ tester = 0
 #y = landmarks16NN[pose, tester, :, 1]
 #ax.scatter(x, y, s = 1, c = 'r', picker = True)
 #fig.canvas.mpl_connect('pick_event', onpick3)
-
-# Get target 3D coordinates of depth maps at the 16 landmark locations
-depth = np.load('depthMaps.npy')
-vDepth = np.empty((20, 150, 16, 3), dtype = 'uint16')
-for pose in range(20):
-    for tester in range(150):
-        vDepth[pose, tester, :, :2] = landmarks16NN[pose, tester, :, :]
-        vDepth[pose, tester, :, 2] = depth[pose, tester, landmarks16NN[pose, tester, :, 1], landmarks16NN[pose, tester, :, 0]]
-
-targetLandmarks, nonZeroDepth = perspectiveTransformKinect(vDepth[pose, tester, :, :])
-
-R, t, s, MSE = initialRegistration(landmarks3D[nonZeroDepth, :], targetLandmarks)
-
-"""
-Some stuff for spherical harmonic illumination model that will be developed
-"""
-#k = np.array([np.sqrt(np.pi)/2, np.sqrt(np.pi/3), 2*np.pi*np.sqrt(5/(4*np.pi))/8])
-#norm = np.array([np.sqrt((4*np.pi)), np.sqrt((4*np.pi)/3), np.sqrt((4*np.pi)/5)])
-#Y = np.array([
-#        1/np.sqrt(4*np.pi),                     # Y00
-#        np.sqrt(3/(4*np.pi))*z,                 # Y10
-#        np.sqrt(3/(4*np.pi))*x,                 # Y11e
-#        np.sqrt(3/(4*np.pi))*y,                 # Y11o
-#        1/2*np.sqrt(5/(4*np.pi))*(3*z^2 - 1),   # Y20
-#        3*np.sqrt(5/(12*np.pi))*x*z,            # Y21e
-#        3*np.sqrt(5/(12*np.pi))*y*z,            # Y21o
-#        3/2*np.sqrt(5/(12*np.pi))*(x^2 - y^2),  # Y22e
-#        3*np.sqrt(5/(12*np.pi))*x*y])           # Y22o
