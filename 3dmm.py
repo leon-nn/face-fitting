@@ -312,6 +312,12 @@ def initialRegistration(A, B):
     Find the rotation matrix R, translation vector t, and scaling factor s to reconstruct the 3D vertices of the target B from the source A as B' = s*R*A.T + t.
     """
     
+    # Make sure the x, y, z vertex coordinates are along the columns
+    if A.shape[0] == 3:
+        A = A.T
+    if B.shape[0] == 3:
+        B = B.T
+    
     # Find centroids of A and B landmarks and move them to the origin
     muA = np.mean(A, axis = 0)
     muB = np.mean(B, axis = 0)
@@ -607,7 +613,125 @@ def saveMasks(dirName, saveDirName = './masks/', mask = 'faceMask.obj', poses = 
             
             exportObj(v[tester, :, :], fNameIn = mask, fNameOut = fName)
             
-            
+def dR_dpsi(angles):
+    """
+    Derivative of the rotation matrix with respect to the x-axis rotation.
+    """
+    psi, theta, phi = angles
+    return np.array([[0, np.sin(psi)*np.sin(phi) + np.cos(psi)*np.sin(theta)*np.cos(phi), np.cos(psi)*np.sin(phi) - np.cos(psi)*np.sin(theta)*np.cos(phi)], [0, -np.sin(psi)*np.cos(phi) + np.cos(psi)*np.sin(theta)*np.sin(phi), -np.cos(psi)*np.cos(phi) - np.sin(psi)*np.sin(theta)*np.sin(phi)], [0, np.cos(psi)*np.cos(theta), -np.sin(psi)*np.cos(theta)]])
+
+def dR_dtheta(angles):
+    """
+    Derivative of the rotation matrix with respect to the y-axis rotation.
+    """
+    psi, theta, phi = angles
+    return np.array([[-np.sin(theta)*np.cos(phi), np.sin(psi)*np.cos(theta)*np.cos(phi), np.cos(psi)*np.cos(theta)*np.cos(phi)], [-np.sin(theta)*np.sin(phi), np.sin(psi)*np.cos(theta)*np.sin(phi), np.cos(psi)*np.cos(theta)*np.sin(phi)], [-np.cos(theta), -np.sin(psi)*np.sin(theta), -np.cos(psi)*np.sin(theta)]])
+
+def dR_dphi(angles):
+    """
+    Derivative of the rotation matrix with respect to the z-axis rotation.
+    """
+    psi, theta, phi = angles
+    return np.array([[-np.cos(theta)*np.sin(phi), -np.cos(psi)*np.cos(phi) - np.sin(psi)*np.sin(theta)*np.sin(phi), np.sin(psi)*np.cos(phi) - np.cos(psi)*np.sin(theta)*np.sin(phi)], [np.cos(theta)*np.cos(phi), -np.cos(psi)*np.sin(phi) + np.sin(psi)*np.sin(theta)*np.cos(phi), np.sin(psi)*np.sin(phi) + np.cos(psi)*np.sin(theta)*np.cos(phi)], [0, 0, 0]])
+
+def gaussNewton(target, sourceMean, sourceEvec, sourceEval, targetLandmarks, sourceLandmarkInds, P):
+    """
+    Energy function to be minimized for fitting.
+    """
+    # Make sure x, y, z vertex coordinates are along the columns
+    if sourceMean.shape[0] != 3:
+        sourceMean = sourceMean.T
+    if targetLandmarks.shape[0] != 3:
+        targetLandmarks = targetLandmarks.T
+    
+    # Shape eigenvector coefficients
+    alpha = P[: 80]
+    
+    # Rotation Euler angles, translation vector, scaling factor
+    angles = P[80: 83]
+    R = rotMat2angle(angles)
+    t = P[83: 86]
+    s = P[86]
+    
+    # The eigenmodel, before rigid transformation and scaling
+    model = sourceMean + np.tensordot(sourceEvec, alpha, axes = 1)
+    
+    # After rigid transformation and scaling
+    source = s*np.dot(R, model) + t[:, np.newaxis]
+    
+    start = clock()
+
+    # Find the nearest neighbors of the target to the source vertices
+    targetNN = np.empty((source.shape))
+    for i in range(source.shape[1]):
+        distances = np.linalg.norm(target - source[:, i], axis = 1)
+        
+        targetNN[:, i] = target[distances.argmin(), :]
+        
+        # Toss out target values that are beyond 400mm from a vertex on the face model because the max face length for humans is about 300mm.
+        target = target[distances < 400, :]
+    
+    print('NN: %f' % (clock() - start))
+    
+    start = clock()
+    
+    # Calculate resisduals
+    rVert = targetNN - source
+    rLand = targetLandmarks - source[:, sourceLandmarkInds]
+    rAlpha = alpha **2 / sourceEval
+    r = np.r_[rVert.flatten('F'), rLand.flatten('F'), rAlpha]
+    
+    # Calculate Jacobian
+    drV_dalpha = s*np.tensordot(R, neuEvec, axes = 1)
+    drV_dpsi = s*np.dot(dR_dpsi(angles), model)
+    drV_dtheta = s*np.dot(dR_dtheta(angles), model)
+    drV_dphi = s*np.dot(dR_dphi(angles), model)
+    drV_dt = np.tile(np.eye(3), [source.shape[1], 1])
+    drV_ds = np.dot(R, model)
+    
+    drL_dalpha = drV_dalpha[:, sourceLandmarkInds, :]
+    drL_dpsi = drV_dpsi[:, sourceLandmarkInds]
+    drL_dtheta = drV_dtheta[:, sourceLandmarkInds]
+    drL_dphi = drV_dphi[:, sourceLandmarkInds]
+    drL_dt = np.tile(np.eye(3), [sourceLandmarkInds.size, 1])
+    drL_ds = drV_ds[:, sourceLandmarkInds]
+    
+    drA_dalpha = np.diag(2*alpha / sourceEval)
+    
+    J = np.r_[np.c_[drV_dalpha.reshape((np.prod(source.shape), alpha.size), order = 'F'), drV_dpsi.flatten('F'), drV_dtheta.flatten('F'), drV_dphi.flatten('F'), drV_dt, drV_ds.flatten('F')], np.c_[drL_dalpha.reshape((np.prod(targetLandmarks.shape), alpha.size), order = 'F'), drL_dpsi.flatten('F'), drL_dtheta.flatten('F'), drL_dphi.flatten('F'), drL_dt, drL_ds.flatten('F')], np.c_[drA_dalpha, np.zeros((alpha.size, 7))]]
+    
+    # Parameter update (Gauss-Newton)
+    dP = -np.linalg.inv(np.dot(J.T, J)).dot(J.T).dot(r)
+    
+    print('GN: %f' % (clock() - start))
+    
+    # Calculate costs
+    costVert = np.linalg.norm(rVert, axis = 0).sum()
+    costLand = np.linalg.norm(targetLandmarks - source[:, sourceLandmarkInds], axis = 0).sum()
+    alphaLogProb = np.sum(rAlpha)
+    
+    totCost = costVert + costLand + alphaLogProb
+    
+    return dP, totCost, target
+
+def generateFace(sourceMean, sourceEvec, P):
+    """
+    Generate vertices based off of eigenmodel and vector of parameters
+    """
+    # Shape eigenvector coefficients
+    alpha = P[: 80]
+    
+    # Rotation Euler angles, translation vector, scaling factor
+    R = rotMat2angle(P[80: 83])
+    t = P[83: 86]
+    s = P[86]
+    
+    # The eigenmodel, before rigid transformation and scaling
+    model = sourceMean + np.tensordot(sourceEvec, alpha, axes = 1)
+    
+    # After rigid transformation and scaling
+    return s*np.dot(R, model) + t[:, np.newaxis]
+
 dirName = '/home/nguyen/Documents/Data/facewarehouse/FaceWarehouse_Data_0/'
 #saveDirName = '/home/nguyen/Documents/Data/facewarehouse/Models/'
 
@@ -653,7 +777,11 @@ dirName = '/home/nguyen/Documents/Data/facewarehouse/FaceWarehouse_Data_0/'
 neuEvec = np.load('./neuEvec.npy')
 neuEval = np.load('./neuEval.npy')
 neuMean = np.load('./neuMean.npy')
-neuMean = np.reshape(neuMean, (neuMean.size//3, 3))
+#neuEvec = np.reshape(neuEvec, (neuMean.size//3, 3, 80))
+neuEvec = np.reshape(neuEvec, (3, neuMean.size//3, 80), order = 'F')
+
+#neuMean = np.reshape(neuMean, (neuMean.size//3, 3))
+neuMean = np.reshape(neuMean, (3, neuMean.size//3), order = 'F')
 
 # Load 3D vertex indices of landmarks and find their vertices on the neutral face
 landmarkInds3D = np.load('./landmarkInds3D.npy')
@@ -686,56 +814,31 @@ alpha = np.zeros(neuEval.shape)
 alpha[0] = 1
 
 # Do initial registration between the 16 corresponding landmarks on the depth map and the face model
-source = neuMean + np.dot(neuEvec, alpha).reshape((neuEvec.shape[0]//3, 3))
+source = neuMean + np.tensordot(neuEvec, alpha, axes = 1)
+rho = initialRegistration(source[:, landmarkInds3D[nonZeroDepth]], targetLandmark)
 
-rho = initialRegistration(source[landmarkInds3D[nonZeroDepth], :], targetLandmark)
+#source = rho[6]*np.dot(rotMat2angle(rho[:3]), neuMean + np.tensordot(neuEvec, alpha, axes = 1)) + rho[3: 6, np.newaxis]
 
-source = rho[6]*np.dot(neuMean + np.dot(neuEvec, alpha).reshape((neuEvec.shape[0]//3, 3)), rotMat2angle(rho[:3]).T) + rho[3: 6]
+P = np.r_[alpha, rho]
+cost = np.empty((10))
+for i in range(10):
+    print('Iteration %d' % i)
+    dP, cost[i], target = gaussNewton(target, neuMean, neuEvec, neuEval, targetLandmark.T, landmarkInds3D[nonZeroDepth], P)
+    
+    P -= dP
 
-def cost(target, sourceMean, sourceEvec, sourceEval, targetLandmarks, sourceLandmarkInds, coef):
-    """
-    Energy function to be minimized for fitting.
-    """
-    # Shape eigenvector coefficients
-    alpha = coef[: 80]
-    
-    # Rotation Euler angles, translation vector, scaling factor
-    rho = coef[80: ]
-    
-    # Choose the depth values from the target that are the nearest neighbors to each vertex on the neutral face model
-    source = rho[6]*np.dot(sourceMean + np.dot(sourceEvec, alpha).reshape((sourceEvec.shape[0]//3, 3)), rotMat2angle(rho[:3]).T) + rho[3: 6]
-    
-#    minDistance = np.empty((source.shape[0]))
-    targetNN = np.empty((source.shape))
-    for i in range(source.shape[0]):
-        distances = np.linalg.norm(target - source[i, :], axis = 1)
-        
-#        minDistance[i] = distances.min()
-        targetNN[i, :] = target[distances.argmin(), :]
-        
-        # Toss out target values that are beyond 400mm from a vertex on the face model because the max face length for humans is about 300mm.
-        target = target[distances < 400, :]
-    
-    # Calculate energy/cost of vertex points
-    costVertexPoints = np.linalg.norm(targetNN - source, axis = 1).sum()
-    
-    # Calculate energy/cost of feature points (landmarks)
-    costFeaturePoints = np.linalg.norm(targetLandmarks - source[sourceLandmarkInds, :], axis = 1).sum()
-    
-    # Calculate -log-probability of alpha (eigenvector coefficients)
-    alphaLogProb = np.sum(alpha ** 2 / sourceEval)
-    
-    return costVertexPoints + costFeaturePoints + alphaLogProb
 
+
+source = generateFace(neuMean, neuEvec, P)
 #x0 = coef
 #
 #spopt.fmin(func, x0, args=(), xtol=0.0001, ftol=0.0001, maxiter=None, maxfun=None, full_output=0, disp=1, retall=0, callback=None, initial_simplex=None)
 #
 #spopt.fmin_ncg(cost, x0, fprime, fhess_p=None, fhess=None, args=(), avextol=1e-05, epsilon=1.4901161193847656e-08, maxiter=None, full_output=0, disp=1, retall=0, callback=None)
 #
-exportObj(target, fNameOut = 'target.obj') 
-exportObj(targetLandmark, fNameOut = 'targetLandmark.obj')
-exportObj(source, fNameIn = './mask2v2.obj', fNameOut = 'source.obj')
+#exportObj(target, fNameOut = 'target.obj') 
+#exportObj(targetLandmark, fNameOut = 'targetLandmark.obj')
+exportObj(source.T, fNameIn = './mask2v2.obj', fNameOut = 'source1.obj')
 
 """
 Some stuff for spherical harmonic illumination model that will be developed
