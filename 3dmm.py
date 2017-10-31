@@ -394,30 +394,30 @@ def generateModels(dirName, saveDirName = './'):
         
     # Neutral face
     print('Loading neutral faces')
-    v = importObj(dirName, shape = 0, dataToImport = ['v'])[0]
-    v = np.reshape(v, (150, v.shape[1]*3))
-    start = clock()
-    evalNeu, evecNeu, meanNeu = PCA(v)
-    print(clock() - start)
-    
-    np.save(saveDirName + 'neuEval', evalNeu)
-    np.save(saveDirName + 'neuEvec', evecNeu)
-    np.save(saveDirName + 'neuMean', meanNeu)
+    vNeu = importObj(dirName, shape = 0, dataToImport = ['v'])[0]
+    vNeu = np.reshape(vNeu, (150, vNeu.shape[1]*3))
+#    start = clock()
+#    evalNeu, evecNeu, meanNeu = PCA(vNeu)
+#    print(clock() - start)
+#    
+#    np.save(saveDirName + 'idEval', evalNeu)
+#    np.save(saveDirName + 'idEvec', evecNeu)
+#    np.save(saveDirName + 'idMean', meanNeu)
     
     # Expressions (from the 46 expression blendshapes)
-    vExp = np.empty((150*46, v.shape[1]))
+    vExp = np.empty((150*46, vNeu.shape[1]))
     for s in range(46):
         print('Loading expression %d' % (s+1))
         temp = importObj(dirName, shape = s+1, dataToImport = ['v'], pose = 47)[0]
-        vExp[s*150: (s+1)*150, :] = np.reshape(temp, (150, v.shape[1]))
+        # Subtract the neutral shape from the expression shape for each test subject
+        vExp[s*150: (s+1)*150, :] = np.reshape(temp, (150, vNeu.shape[1])) - vNeu
     
     start = clock()
-    evalExp, evecExp, meanExp = PCA(vExp, numPC = 76)
+    evalExp, evecExp = PCA(vExp, numPC = 76)[:2]
     print(clock() - start)
     
-    np.save(saveDirName + 'expEvalBS', evalExp)
-    np.save(saveDirName + 'expEvecBS', evecExp)
-    np.save(saveDirName + 'expMeanBS', meanExp)
+    np.save(saveDirName + 'expEval', evalExp)
+    np.save(saveDirName + 'expEvec', evecExp)
 
 def writeShape(mean, eigVec, fNameIn = None, f = None, a = None, fNameOut = 'test.obj'):
     """
@@ -479,6 +479,9 @@ def exportObj(v, vt = None, f = None, fNameIn = None, fNameOut = 'test.obj'):
     """
     Write vertices to an .obj file.
     """
+    # Make sure x, y, z vertex coordinates are along the columns
+    if v.shape[1] != 3:
+        v = v.T
     
     # Add the .obj extension if necessary
     if not fNameOut.endswith('.obj'):
@@ -634,27 +637,35 @@ def dR_dphi(angles):
     psi, theta, phi = angles
     return np.array([[-np.cos(theta)*np.sin(phi), -np.cos(psi)*np.cos(phi) - np.sin(psi)*np.sin(theta)*np.sin(phi), np.sin(psi)*np.cos(phi) - np.cos(psi)*np.sin(theta)*np.sin(phi)], [np.cos(theta)*np.cos(phi), -np.cos(psi)*np.sin(phi) + np.sin(psi)*np.sin(theta)*np.cos(phi), np.sin(psi)*np.sin(phi) + np.cos(psi)*np.sin(theta)*np.cos(phi)], [0, 0, 0]])
 
-def gaussNewton(target, sourceMean, sourceEvec, sourceEval, targetLandmarks, sourceLandmarkInds, P):
+def gaussNewton(P, target, targetLandmarks, sourceLandmarkInds):
     """
     Energy function to be minimized for fitting.
     """
-    # Make sure x, y, z vertex coordinates are along the columns
-    if sourceMean.shape[0] != 3:
-        sourceMean = sourceMean.T
+    # Load geometric models
+    idEvec = np.load('./models/idEvec.npy')
+    idEval = np.load('./models/idEval.npy')
+    idEvec = np.reshape(idEvec, (3, idEvec.shape[0]//3, 80), order = 'F')
+    idMean = np.load('./models/idMean.npy')
+    idMean = np.reshape(idMean, (3, idMean.size//3), order = 'F')
+    expEvec = np.load('./models/expEvec.npy')
+    expEval = np.load('./models/expEval.npy')
+    expEvec = np.reshape(expEvec, (3, expEvec.shape[0]//3, 76), order = 'F')
+    
+    # Shape eigenvector coefficients
+    alpha = P[: idEvec.shape[2]]
+    delta = P[idEvec.shape[2]: idEvec.shape[2] + expEvec.shape[2]]
+    
+    # Rotation Euler angles, translation vector, scaling factor
+    angles = P[idEvec.shape[2] + expEvec.shape[2]:][:3]
+    R = rotMat2angle(angles)
+    t = P[idEvec.shape[2] + expEvec.shape[2]:][3: 6]
+    s = P[idEvec.shape[2] + expEvec.shape[2]:][6]
+    
     if targetLandmarks.shape[0] != 3:
         targetLandmarks = targetLandmarks.T
     
-    # Shape eigenvector coefficients
-    alpha = P[: 80]
-    
-    # Rotation Euler angles, translation vector, scaling factor
-    angles = P[80: 83]
-    R = rotMat2angle(angles)
-    t = P[83: 86]
-    s = P[86]
-    
     # The eigenmodel, before rigid transformation and scaling
-    model = sourceMean + np.tensordot(sourceEvec, alpha, axes = 1)
+    model = idMean + np.tensordot(idEvec, alpha, axes = 1) + np.tensordot(expEvec, delta, axes = 1)
     
     # After rigid transformation and scaling
     source = s*np.dot(R, model) + t[:, np.newaxis]
@@ -664,7 +675,7 @@ def gaussNewton(target, sourceMean, sourceEvec, sourceEval, targetLandmarks, sou
     # Find the nearest neighbors of the target to the source vertices
     targetNN = np.empty((source.shape))
     for i in range(source.shape[1]):
-        distances = np.linalg.norm(target - source[:, i], axis = 1)
+        distances = np.linalg.norm(target - source[:, i], ord = 1, axis = 1)
         
         targetNN[:, i] = target[distances.argmin(), :]
         
@@ -678,11 +689,13 @@ def gaussNewton(target, sourceMean, sourceEvec, sourceEval, targetLandmarks, sou
     # Calculate resisduals
     rVert = targetNN - source
     rLand = targetLandmarks - source[:, sourceLandmarkInds]
-    rAlpha = alpha **2 / sourceEval
-    r = np.r_[rVert.flatten('F'), rLand.flatten('F'), rAlpha]
+    rAlpha = alpha ** 2 / idEval
+    rDelta = delta ** 2 / expEval
+    r = np.r_[rVert.flatten('F'), rLand.flatten('F'), rAlpha, rDelta]
     
     # Calculate Jacobian
-    drV_dalpha = s*np.tensordot(R, neuEvec, axes = 1)
+    drV_dalpha = s*np.tensordot(R, idEvec, axes = 1)
+    drV_ddelta = s*np.tensordot(R, expEvec, axes = 1)
     drV_dpsi = s*np.dot(dR_dpsi(angles), model)
     drV_dtheta = s*np.dot(dR_dtheta(angles), model)
     drV_dphi = s*np.dot(dR_dphi(angles), model)
@@ -690,15 +703,17 @@ def gaussNewton(target, sourceMean, sourceEvec, sourceEval, targetLandmarks, sou
     drV_ds = np.dot(R, model)
     
     drL_dalpha = drV_dalpha[:, sourceLandmarkInds, :]
+    drL_ddelta = drV_ddelta[:, sourceLandmarkInds, :]
     drL_dpsi = drV_dpsi[:, sourceLandmarkInds]
     drL_dtheta = drV_dtheta[:, sourceLandmarkInds]
     drL_dphi = drV_dphi[:, sourceLandmarkInds]
     drL_dt = np.tile(np.eye(3), [sourceLandmarkInds.size, 1])
     drL_ds = drV_ds[:, sourceLandmarkInds]
     
-    drA_dalpha = np.diag(2*alpha / sourceEval)
+    drR_dalpha = np.diag(2*alpha / idEval)
+    drR_ddelta = np.diag(2*delta / expEval)
     
-    J = np.r_[np.c_[drV_dalpha.reshape((np.prod(source.shape), alpha.size), order = 'F'), drV_dpsi.flatten('F'), drV_dtheta.flatten('F'), drV_dphi.flatten('F'), drV_dt, drV_ds.flatten('F')], np.c_[drL_dalpha.reshape((np.prod(targetLandmarks.shape), alpha.size), order = 'F'), drL_dpsi.flatten('F'), drL_dtheta.flatten('F'), drL_dphi.flatten('F'), drL_dt, drL_ds.flatten('F')], np.c_[drA_dalpha, np.zeros((alpha.size, 7))]]
+    J = np.r_[np.c_[drV_dalpha.reshape((np.prod(source.shape), alpha.size), order = 'F'), drV_dpsi.flatten('F'), drV_dtheta.flatten('F'), drV_dphi.flatten('F'), drV_dt, drV_ds.flatten('F')], np.c_[drL_dalpha.reshape((np.prod(targetLandmarks.shape), alpha.size), order = 'F'), drL_dpsi.flatten('F'), drL_dtheta.flatten('F'), drL_dphi.flatten('F'), drL_dt, drL_ds.flatten('F')], np.c_[drR_dalpha, np.zeros((alpha.size, 7))]]
     
     # Parameter update (Gauss-Newton)
     dP = -np.linalg.inv(np.dot(J.T, J)).dot(J.T).dot(r)
@@ -714,30 +729,35 @@ def gaussNewton(target, sourceMean, sourceEvec, sourceEval, targetLandmarks, sou
     
     return dP, totCost, target
 
-def generateFace(sourceMean, sourceEvec, P):
+def generateFace(P):
     """
     Generate vertices based off of eigenmodel and vector of parameters
     """
+    # Load geometric models
+    idEvec = np.load('./models/idEvec.npy')
+    idEvec = np.reshape(idEvec, (3, idEvec.shape[0]//3, 80), order = 'F')
+    idMean = np.load('./models/idMean.npy')
+    idMean = np.reshape(idMean, (3, idMean.size//3), order = 'F')
+    expEvec = np.load('./models/expEvec.npy')
+    expEvec = np.reshape(expEvec, (3, expEvec.shape[0]//3, 76), order = 'F')
+    
     # Shape eigenvector coefficients
-    alpha = P[: 80]
+    idCoef = P[: idEvec.shape[2]]
+    expCoef = P[idEvec.shape[2]: idEvec.shape[2] + expEvec.shape[2]]
     
     # Rotation Euler angles, translation vector, scaling factor
-    R = rotMat2angle(P[80: 83])
-    t = P[83: 86]
-    s = P[86]
+    R = rotMat2angle(P[idEvec.shape[2] + expEvec.shape[2]:][:3])
+    t = P[idEvec.shape[2] + expEvec.shape[2]:][3: 6]
+    s = P[idEvec.shape[2] + expEvec.shape[2]:][6]
     
     # The eigenmodel, before rigid transformation and scaling
-    model = sourceMean + np.tensordot(sourceEvec, alpha, axes = 1)
+    model = idMean + np.tensordot(idEvec, idCoef, axes = 1) + np.tensordot(expEvec, expCoef, axes = 1)
     
     # After rigid transformation and scaling
     return s*np.dot(R, model) + t[:, np.newaxis]
 
 dirName = '/home/nguyen/Documents/Data/facewarehouse/FaceWarehouse_Data_0/'
 #saveDirName = '/home/nguyen/Documents/Data/facewarehouse/Models/'
-
-#start = clock()
-
-#elapsed = (clock() - start)
         
 #vt, f = importObj(dirName, shape = 0, dataToImport = ['vt', 'f'])
 #plt.scatter(vt[:, 0], vt[:, 1], s = 1)
@@ -756,47 +776,34 @@ dirName = '/home/nguyen/Documents/Data/facewarehouse/FaceWarehouse_Data_0/'
 #fTri = np.r_[f[:, [0, 1, 2]], f[:, [0, 2, 3]]]
 #exportObj(meanS.reshape((5760, 3)), f = fTri, fNameOut = 'meanTri.obj')
 
+# Load identity (neutral face) eigenmodel
+idEvec = np.load('./models/idEvec.npy')
+idEval = np.load('./models/idEval.npy')
+idMean = np.load('./models/idMean.npy')
+#idEvec = np.reshape(idEvec, (idMean.size//3, 3, 80))
+idEvec = np.reshape(idEvec, (3, idEvec.shape[0]//3, 80), order = 'F')
+#idMean = np.reshape(idMean, (idMean.size//3, 3))
+idMean = np.reshape(idMean, (3, idMean.size//3), order = 'F')
 
-#coef = np.zeros((76))
-#coef[75] = 1
-#writeShape(meanExp, evecExp, fNameIn = './mask2v2.obj', a = coef, fNameOut = './expTest.obj')
-
-#exportObj(meanExp.reshape((17280//3, 3)), fNameIn = './mask2v2.obj', fNameOut = 'meanExp.obj')
-
-#vNeu = importObj('./masks2v2/', shape = 0, dataToImport = ['v'])[0]
-#vNeu = np.reshape(vNeu, (150, 5760*3))
-#
-#vExp = importObj('./masks2v2/', shape = 1, dataToImport = ['v'])[0]
-#vExp = np.reshape(vExp, (150, 5760*3))
-#
-#S = vNeu[0, :] + (vExp[1, :] - vNeu[1, :])
-#S = np.reshape(S, (17280//3, 3))
-#exportObj(S, fNameIn = 'mask2v2.obj', fNameOut = 'testExp.obj')
-
-# Load neutral face eigenmodel
-neuEvec = np.load('./neuEvec.npy')
-neuEval = np.load('./neuEval.npy')
-neuMean = np.load('./neuMean.npy')
-#neuEvec = np.reshape(neuEvec, (neuMean.size//3, 3, 80))
-neuEvec = np.reshape(neuEvec, (3, neuMean.size//3, 80), order = 'F')
-
-#neuMean = np.reshape(neuMean, (neuMean.size//3, 3))
-neuMean = np.reshape(neuMean, (3, neuMean.size//3), order = 'F')
+# Load expression eigenmodel
+expEvec = np.load('./models/expEvec.npy')
+expEval = np.load('./models/expEval.npy')
+expEvec = np.reshape(expEvec, (3, expEvec.shape[0]//3, 76), order = 'F')
 
 # Load 3D vertex indices of landmarks and find their vertices on the neutral face
-landmarkInds3D = np.load('./landmarkInds3D.npy')
+landmarkInds3D = np.load('./data/landmarkInds3D.npy')
 
 pose = 0
 tester = 0
 
 # Gather 2D landmarks that correspond to manually chosen 3D landmarks
 landmarkInds2D = np.array([0, 1, 4, 7, 10, 13, 14, 27, 29, 31, 33, 46, 49, 52, 55, 65])
-landmarks = np.load('landmarks2D.npy')[pose, tester, landmarkInds2D, :]
+landmarks = np.load('./data/landmarks2D.npy')[pose, tester, landmarkInds2D, :]
 landmarkPixelInd = (landmarks * np.array([639, 479])).astype(int)
 landmarkPixelInd[:, 1] = 479 - landmarkPixelInd[:, 1]
 
 # Get target 3D coordinates of depth maps at the 16 landmark locations
-depth = np.load('depthMaps.npy')[pose, tester, :, :]
+depth = np.load('./data/depthMaps.npy')[pose, tester, :, :]
 
 targetLandmark, nonZeroDepth = perspectiveTransformKinect(np.c_[landmarkPixelInd[:, 0], landmarkPixelInd[:, 1], depth[landmarkPixelInd[:, 1], landmarkPixelInd[:, 0]]])
 
@@ -809,36 +816,33 @@ target = perspectiveTransformKinect(np.c_[np.tile(np.arange(640), 480), np.repea
 #plt.figure()
 #plt.scatter(target[:, 0], target[:, 1], s=1)
 
-# Initiate parameters
-alpha = np.zeros(neuEval.shape)
-alpha[0] = 1
+# Initialize parameters
+idCoef = np.zeros(idEval.shape)
+idCoef[0] = 1
+expCoef = np.zeros(expEval.shape)
+expCoef[0] = 1
 
 # Do initial registration between the 16 corresponding landmarks on the depth map and the face model
-source = neuMean + np.tensordot(neuEvec, alpha, axes = 1)
+source = idMean + np.tensordot(idEvec, idCoef, axes = 1) + np.tensordot(expEvec, expCoef, axes = 1)
 rho = initialRegistration(source[:, landmarkInds3D[nonZeroDepth]], targetLandmark)
 
-#source = rho[6]*np.dot(rotMat2angle(rho[:3]), neuMean + np.tensordot(neuEvec, alpha, axes = 1)) + rho[3: 6, np.newaxis]
+#source = rho[6]*np.dot(rotMat2angle(rho[:3]), idMean + np.tensordot(idEvec, idCoef, axes = 1) + np.tensordot(expEvec, expCoef, axes = 1)) + rho[3: 6, np.newaxis]
 
-P = np.r_[alpha, rho]
-cost = np.empty((10))
-for i in range(10):
-    print('Iteration %d' % i)
-    dP, cost[i], target = gaussNewton(target, neuMean, neuEvec, neuEval, targetLandmark.T, landmarkInds3D[nonZeroDepth], P)
-    
-    P -= dP
+P = np.r_[idCoef, expCoef, rho]
+#cost = np.empty((10))
+#for i in range(10):
+#    print('Iteration %d' % i)
+#    dP, cost[i], target = gaussNewton(target, idMean, idEvec, idEval, targetLandmark.T, landmarkInds3D[nonZeroDepth], P)
+#    
+#    P -= dP
 
+#source = generateFace(P)
 
-
-source = generateFace(neuMean, neuEvec, P)
-#x0 = coef
-#
-#spopt.fmin(func, x0, args=(), xtol=0.0001, ftol=0.0001, maxiter=None, maxfun=None, full_output=0, disp=1, retall=0, callback=None, initial_simplex=None)
-#
 #spopt.fmin_ncg(cost, x0, fprime, fhess_p=None, fhess=None, args=(), avextol=1e-05, epsilon=1.4901161193847656e-08, maxiter=None, full_output=0, disp=1, retall=0, callback=None)
-#
+
 #exportObj(target, fNameOut = 'target.obj') 
 #exportObj(targetLandmark, fNameOut = 'targetLandmark.obj')
-exportObj(source.T, fNameIn = './mask2v2.obj', fNameOut = 'source1.obj')
+#exportObj(source, fNameIn = './mask2v2.obj', fNameOut = 'source1.obj')
 
 """
 Some stuff for spherical harmonic illumination model that will be developed
