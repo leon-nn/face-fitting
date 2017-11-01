@@ -19,7 +19,7 @@ import re
 # For plotting and importing PNG images
 import matplotlib.pyplot as plt
 import matplotlib.image as mpimg
-from mpl_toolkits.mplot3d import Axes3D
+#from mpl_toolkits.mplot3d import Axes3D
 #import scipy.interpolate as intp
 
 from time import clock
@@ -27,9 +27,11 @@ import os
 from collections import defaultdict
 from itertools import chain, compress
 
-from scipy.stats import mode
+#from scipy.stats import mode
 
-import scipy.optimize as spopt
+#import scipy.optimize as spopt
+
+from sklearn.neighbors import NearestNeighbors
 
 def onpick3(event):
     """
@@ -637,7 +639,7 @@ def dR_dphi(angles):
     psi, theta, phi = angles
     return np.array([[-np.cos(theta)*np.sin(phi), -np.cos(psi)*np.cos(phi) - np.sin(psi)*np.sin(theta)*np.sin(phi), np.sin(psi)*np.cos(phi) - np.cos(psi)*np.sin(theta)*np.sin(phi)], [np.cos(theta)*np.cos(phi), -np.cos(psi)*np.sin(phi) + np.sin(psi)*np.sin(theta)*np.cos(phi), np.sin(psi)*np.sin(phi) + np.cos(psi)*np.sin(theta)*np.cos(phi)], [0, 0, 0]])
 
-def gaussNewton(P, target, targetLandmarks, sourceLandmarkInds):
+def gaussNewton(P, target, targetLandmarks, sourceLandmarkInds, NN):
     """
     Energy function to be minimized for fitting.
     """
@@ -670,22 +672,13 @@ def gaussNewton(P, target, targetLandmarks, sourceLandmarkInds):
     # After rigid transformation and scaling
     source = s*np.dot(R, model) + t[:, np.newaxis]
     
-    start = clock()
-
     # Find the nearest neighbors of the target to the source vertices
-    targetNN = np.empty((source.shape))
-    for i in range(source.shape[1]):
-        distances = np.linalg.norm(target - source[:, i], ord = 1, axis = 1)
-        
-        targetNN[:, i] = target[distances.argmin(), :]
-        
-        # Toss out target values that are beyond 400mm from a vertex on the face model because the max face length for humans is about 300mm.
-        target = target[distances < 400, :]
-    
+    start = clock()
+    distance, ind = NN.kneighbors(source.T)
+    targetNN = target[ind.squeeze(axis = 1), :].T
     print('NN: %f' % (clock() - start))
     
     start = clock()
-    
     # Calculate resisduals
     rVert = targetNN - source
     rLand = targetLandmarks - source[:, sourceLandmarkInds]
@@ -694,26 +687,26 @@ def gaussNewton(P, target, targetLandmarks, sourceLandmarkInds):
     r = np.r_[rVert.flatten('F'), rLand.flatten('F'), rAlpha, rDelta]
     
     # Calculate Jacobian
-    drV_dalpha = s*np.tensordot(R, idEvec, axes = 1)
-    drV_ddelta = s*np.tensordot(R, expEvec, axes = 1)
-    drV_dpsi = s*np.dot(dR_dpsi(angles), model)
-    drV_dtheta = s*np.dot(dR_dtheta(angles), model)
-    drV_dphi = s*np.dot(dR_dphi(angles), model)
-    drV_dt = np.tile(np.eye(3), [source.shape[1], 1])
-    drV_ds = np.dot(R, model)
+    drV_dalpha = -s*np.tensordot(R, idEvec, axes = 1)
+    drV_ddelta = -s*np.tensordot(R, expEvec, axes = 1)
+    drV_dpsi = -s*np.dot(dR_dpsi(angles), model)
+    drV_dtheta = -s*np.dot(dR_dtheta(angles), model)
+    drV_dphi = -s*np.dot(dR_dphi(angles), model)
+    drV_dt = -np.tile(np.eye(3), [source.shape[1], 1])
+    drV_ds = -np.dot(R, model)
     
     drL_dalpha = drV_dalpha[:, sourceLandmarkInds, :]
     drL_ddelta = drV_ddelta[:, sourceLandmarkInds, :]
     drL_dpsi = drV_dpsi[:, sourceLandmarkInds]
     drL_dtheta = drV_dtheta[:, sourceLandmarkInds]
     drL_dphi = drV_dphi[:, sourceLandmarkInds]
-    drL_dt = np.tile(np.eye(3), [sourceLandmarkInds.size, 1])
+    drL_dt = -np.tile(np.eye(3), [sourceLandmarkInds.size, 1])
     drL_ds = drV_ds[:, sourceLandmarkInds]
     
     drR_dalpha = np.diag(2*alpha / idEval)
     drR_ddelta = np.diag(2*delta / expEval)
     
-    J = np.r_[np.c_[drV_dalpha.reshape((np.prod(source.shape), alpha.size), order = 'F'), drV_dpsi.flatten('F'), drV_dtheta.flatten('F'), drV_dphi.flatten('F'), drV_dt, drV_ds.flatten('F')], np.c_[drL_dalpha.reshape((np.prod(targetLandmarks.shape), alpha.size), order = 'F'), drL_dpsi.flatten('F'), drL_dtheta.flatten('F'), drL_dphi.flatten('F'), drL_dt, drL_ds.flatten('F')], np.c_[drR_dalpha, np.zeros((alpha.size, 7))]]
+    J = np.r_[np.c_[drV_dalpha.reshape((np.prod(source.shape), alpha.size), order = 'F'), drV_ddelta.reshape((np.prod(source.shape), delta.size), order = 'F'), drV_dpsi.flatten('F'), drV_dtheta.flatten('F'), drV_dphi.flatten('F'), drV_dt, drV_ds.flatten('F')], np.c_[drL_dalpha.reshape((np.prod(targetLandmarks.shape), alpha.size), order = 'F'), drL_ddelta.reshape((np.prod(targetLandmarks.shape), delta.size), order = 'F'), drL_dpsi.flatten('F'), drL_dtheta.flatten('F'), drL_dphi.flatten('F'), drL_dt, drL_ds.flatten('F')], np.c_[drR_dalpha, np.zeros((alpha.size, delta.size + 7))], np.c_[np.zeros((delta.size, alpha.size)), drR_ddelta, np.zeros((delta.size, 7))]]
     
     # Parameter update (Gauss-Newton)
     dP = -np.linalg.inv(np.dot(J.T, J)).dot(J.T).dot(r)
@@ -723,9 +716,8 @@ def gaussNewton(P, target, targetLandmarks, sourceLandmarkInds):
     # Calculate costs
     costVert = np.linalg.norm(rVert, axis = 0).sum()
     costLand = np.linalg.norm(targetLandmarks - source[:, sourceLandmarkInds], axis = 0).sum()
-    alphaLogProb = np.sum(rAlpha)
     
-    totCost = costVert + costLand + alphaLogProb
+    totCost = costVert + costLand + np.sum(rAlpha) + np.sum(rDelta)
     
     return dP, totCost, target
 
@@ -826,23 +818,34 @@ expCoef[0] = 1
 source = idMean + np.tensordot(idEvec, idCoef, axes = 1) + np.tensordot(expEvec, expCoef, axes = 1)
 rho = initialRegistration(source[:, landmarkInds3D[nonZeroDepth]], targetLandmark)
 
-#source = rho[6]*np.dot(rotMat2angle(rho[:3]), idMean + np.tensordot(idEvec, idCoef, axes = 1) + np.tensordot(expEvec, expCoef, axes = 1)) + rho[3: 6, np.newaxis]
-
 P = np.r_[idCoef, expCoef, rho]
-#cost = np.empty((10))
-#for i in range(10):
-#    print('Iteration %d' % i)
-#    dP, cost[i], target = gaussNewton(target, idMean, idEvec, idEval, targetLandmark.T, landmarkInds3D[nonZeroDepth], P)
-#    
-#    P -= dP
-
 #source = generateFace(P)
+
+# Nearest neighbors fitting from scikit-learn to form correspondence between target vertices and source vertices during optimization
+NN = NearestNeighbors(n_neighbors = 1, metric = 'l1')
+NN.fit(target)
+NNparams = NN.get_params()
+
+cost = np.empty((100))
+for i in range(100):
+    print('Iteration %d' % i)
+    dP, cost[i], target = gaussNewton(P, target, targetLandmark.T, landmarkInds3D[nonZeroDepth], NN)
+    
+    P += dP
+
+source = generateFace(P)
+
+#hist, bins = np.histogram(np.array(distances), bins=50)
+#width = 0.7 * (bins[1] - bins[0])
+#center = (bins[:-1] + bins[1:]) / 2
+#plt.bar(center, hist, align='center', width=width)
+#plt.show()
 
 #spopt.fmin_ncg(cost, x0, fprime, fhess_p=None, fhess=None, args=(), avextol=1e-05, epsilon=1.4901161193847656e-08, maxiter=None, full_output=0, disp=1, retall=0, callback=None)
 
 #exportObj(target, fNameOut = 'target.obj') 
 #exportObj(targetLandmark, fNameOut = 'targetLandmark.obj')
-#exportObj(source, fNameIn = './mask2v2.obj', fNameOut = 'source1.obj')
+#exportObj(source, fNameIn = './mask2v2.obj', fNameOut = 'source.obj')
 
 """
 Some stuff for spherical harmonic illumination model that will be developed
