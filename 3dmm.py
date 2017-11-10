@@ -29,11 +29,10 @@ from itertools import chain, compress
 
 #from scipy.stats import mode
 
-#import scipy.optimize as spopt
-
 from sklearn.neighbors import NearestNeighbors
 from sklearn.preprocessing import normalize
 from scipy.optimize import least_squares
+from scipy.optimize import minimize
 from scipy.linalg import rq
 
 def onpick3(event):
@@ -782,8 +781,8 @@ expEvec = np.reshape(expEvec, (3, expEvec.shape[0]//3, 76), order = 'F')
 # Load 3D vertex indices of landmarks and find their vertices on the neutral face
 landmarkInds3D = np.load('./data/landmarkInds3D.npy')
 
-pose = 0
-tester = 0
+pose = 7
+tester = 7
 
 # Gather 2D landmarks that correspond to manually chosen 3D landmarks
 landmarkInds2D = np.array([0, 1, 4, 7, 10, 13, 14, 27, 29, 31, 33, 46, 49, 52, 55, 65])
@@ -813,9 +812,8 @@ expCoef[0] = 1
 
 # Do initial registration between the 16 corresponding landmarks on the depth map and the face model
 #source = idMean + np.tensordot(idEvec, idCoef, axes = 1) + np.tensordot(expEvec, expCoef, axes = 1)
-source = idMean
-rho = initialRegistration(source[:, landmarkInds3D[nonZeroDepth]], targetLandmark)
-Rd = rotMat2angle(rho[:3])
+#rho = initialRegistration(source[:, landmarkInds3D[nonZeroDepth]], targetLandmark)
+#Rd = rotMat2angle(rho[:3])
 
 #P = np.r_[idCoef, expCoef, rho]
 #source = generateFace(P)
@@ -840,13 +838,9 @@ Rd = rotMat2angle(rho[:3])
 #plt.bar(center, hist, align='center', width=width)
 #plt.show()
 
-#spopt.fmin_ncg(cost, x0, fprime, fhess_p=None, fhess=None, args=(), avextol=1e-05, epsilon=1.4901161193847656e-08, maxiter=None, full_output=0, disp=1, retall=0, callback=None)
-
 #exportObj(target, fNameOut = 'target.obj') 
 #exportObj(targetLandmark, fNameOut = 'targetLandmark.obj')
 #exportObj(source, fNameIn = './mask2v2.obj', fNameOut = 'source.obj')
-
-
 
 # Direct linear transform / "Gold Standard Algorithm"
 # Normalize landmark coordinates; preconditioning
@@ -856,8 +850,8 @@ uvCentered = landmarkPixelInd - c2D
 s2D = np.linalg.norm(uvCentered, axis = 1).mean()
 x = np.c_[uvCentered / s2D * np.sqrt(2), np.ones(numLandmarks)]
 
-c3D = np.mean(source[:, landmarkInds3D].T, axis = 0)
-xyzCentered = source[:, landmarkInds3D].T - c3D
+c3D = np.mean(idMean[:, landmarkInds3D].T, axis = 0)
+xyzCentered = idMean[:, landmarkInds3D].T - c3D
 s3D = np.linalg.norm(xyzCentered, axis = 1).mean()
 X = np.c_[xyzCentered / s3D * np.sqrt(3), np.ones(numLandmarks)]
 
@@ -884,96 +878,105 @@ def cameraProjectionResidual(M, x, X):
 Pgold = least_squares(cameraProjectionResidual, Pnorm.flatten(), args = (x, X))
 
 # Denormalize P
-P1 = np.dot(Tinv, Pnorm).dot(U)
-P2 = np.dot(Tinv, Pgold.x.reshape(3, 4)).dot(U)
+P = np.dot(Tinv, Pgold.x.reshape(3, 4)).dot(U)
+
+# Even more minimization with projection matrix to get initial shape parameters
+def camWithShape(param, x, Xmu, Xid, Xexp, idEval, expEval):
+    """
+    Minimize L2-norm of landmark fitting residuals and regularization terms for shape parameters
+    """
+    P = param[:12]
+    P = P.reshape((3, 4))
+    idCoef = param[12: 12 + idEval.size]
+    expCoef = param[12 + idEval.size:]
+    
+    X = np.dot(P, Xmu + np.tensordot(Xid, idCoef, axes = 1) + np.tensordot(Xexp, expCoef, axes = 1)).T
+    residuals = x - X
+    
+    regularize = np.sum(idCoef ** 2 / idEval) + np.sum(expCoef ** 2 / expEval)
+    
+    return np.linalg.norm(residuals, axis = 1).sum() + regularize
+
+Lmu = np.r_[idMean[:, landmarkInds3D], np.ones((1, landmarkInds3D.size))]
+Lid = np.concatenate((idEvec[:, landmarkInds3D, :], np.zeros((1, landmarkInds3D.size, idCoef.size))), axis = 0)
+Lexp = np.concatenate((expEvec[:, landmarkInds3D, :], np.zeros((1, landmarkInds3D.size, expCoef.size))), axis = 0)
+x = np.c_[landmarkPixelInd, np.ones(16)]
+
+param = minimize(camWithShape, np.r_[P.flatten(), idCoef, expCoef], args = (x, Lmu, Lid, Lexp, idEval, expEval))
+
+# Separate variates in parameter vector
+P = param.x[:12].reshape((3, 4))
+idCoef = param.x[12: 12 + idCoef.size]
+expCoef = param.x[12 + idCoef.size:]
+
+# Get inner parameters from projection matrix via RQ decomposition
+K, R = rq(P[:, :3])
+t = np.linalg.inv(K).dot(P[:, -1])
 
 # Project 3D model into 2D plane
-xhat = np.dot(P2, np.r_[source, np.ones((1, source.shape[1]))])
-xhat = xhat[:2, :].T
-
-# QR decomposition of camera matrix to get "inner parameters": rotation and translation
-#R, K = np.linalg.qr(P2[:, :3])
-M = P2[:, :3]
-K = np.zeros(9)
-R = np.empty((3, 3))
-K[8] = np.linalg.norm(M[2, :])
-R[2, :] = M[2, :] / K[8]
-K[5] = np.dot(M[1, :], R[2, :])
-R[1, :] = M[1, :] - K[5]*R[2, :]
-K[4] = np.linalg.norm(R[1, :])
-R[1, :] /= K[4]
-K[2] = np.dot(M[0, :], R[2, :])
-K[1] = np.dot(M[0, :], R[1, :])
-R[0, :] = M[0, :] - K[1]*M[1, :] - K[2]*M[2, :]
-K[0] = np.linalg.norm(R[0, :])
-R[0, :] /= K[0]
-K = K.reshape((3, 3))
-
-#K, R = rq(P2[:, :3])
-#D = np.diag(np.sign(np.diag(K)))
-#K = np.dot(D, K)
-#R = np.dot(R, D)
-rho = rotMat2angle(R)
+fitting = K[:2, :].dot(R.dot(idMean + np.tensordot(idEvec, idCoef, axes = 1) + np.tensordot(expEvec, expCoef, axes = 1)) + t[:, np.newaxis])
 
 # Plot the projected 3D model on top of the input RGB image
 fName = dirName + 'Tester_' + str(tester+1) + '/TrainingPose/pose_' + str(pose) + '.png'
 img = mpimg.imread(fName)
 plt.imshow(img)
 plt.hold(True)
-plt.scatter(xhat[:, 0], xhat[:, 1], s = .01, c = 'b')
+plt.scatter(fitting[0, :], fitting[1, :], s = 0.1, c = 'g')
+plt.hold(True)
+plt.scatter(fitting[0, landmarkInds3D], fitting[1, landmarkInds3D], s = 2, c = 'b')
 #plt.hold(True)
 #plt.scatter(landmarkPixelInd[:, 0], landmarkPixelInd[:, 1], c = 'b')
 
 """
 Some stuff for spherical harmonic illumination model that will be developed
 """
-# Get triangle faces
-f = importObj('./masks2v2/', shape = 0, dataToImport = ['f'])[0][0, :, :] - 1
-f = np.r_[f[:, [0, 1, 2]], f[:, [0, 2, 3]]]
-
-# Calculate normals of vertex points
-idMean = np.load('./models/idMean.npy')
-idMean = np.reshape(idMean, (idMean.size//3, 3))
-
-fNorm = np.cross(idMean[f[:, 0], :] - idMean[f[:, 1], :], idMean[f[:, 0], :] - idMean[f[:, 2], :])
-
-vertex2face = [np.where(np.isin(f, vertexInd).any(axis = 1))[0].tolist() for vertexInd in range(idMean.shape[0])]
-
-vNorm = np.array([np.sum(fNorm[faces, :], axis = 0) for faces in vertex2face])
-
-vNorm = normalize(vNorm)
-
-def SHbasis(v, n):
-    """
-    SH basis functions                               lm
-        1/np.sqrt(4*np.pi)                          Y00
-        np.sqrt(3/(4*np.pi))*nz                     Y10
-        np.sqrt(3/(4*np.pi))*nx                     Y11e
-        np.sqrt(3/(4*np.pi))*ny                     Y11o
-        1/2*np.sqrt(5/(4*np.pi))*(3*nz^2 - 1)       Y20
-        3*np.sqrt(5/(12*np.pi))*nx*nz               Y21e
-        3*np.sqrt(5/(12*np.pi))*ny*nz               Y21o
-        3/2*np.sqrt(5/(12*np.pi))*(nx^2 - ny^2)     Y22e
-        3*np.sqrt(5/(12*np.pi))*nx*ny               Y22o
-    
-    For a sphere, the Lambertian kernel has most of its energy in the first three bands of the spherical harmonic basis functions (above). This implies that Lambertian reflectance functions can be well-approximated by these low-order SH bases.
-    """
-    # Lambertian kernel coefficients indexed by l
-#    k = np.array([np.sqrt(np.pi)/2, np.sqrt(np.pi/3), np.sqrt(5*np.pi)/8])
-    
-    # Normalization factor for SH
-#    norm = np.array([np.sqrt((4*np.pi)), np.sqrt((4*np.pi)/3), np.sqrt((4*np.pi)/5)])
-    
-    b = np.empty((9, v.shape))
-    b[0, :, :] = 1/np.sqrt(4*np.pi) * v
-    b[1, :, :] = np.sqrt(3/(4*np.pi)) * n[:, 2] * v
-    b[2, :, :] = np.sqrt(3/(4*np.pi)) * n[:, 0] * v
-    b[3, :, :] = np.sqrt(3/(4*np.pi)) * n[:, 1] * v
-    b[4, :, :] = 1/2*np.sqrt(5/(4*np.pi)) * (3*np.power(n[:, 2]) - 1) * v
-    b[5, :, :] = 3*np.sqrt(5/(12*np.pi)) * n[:, 0] * n[:, 2] * v
-    b[6, :, :] = 3*np.sqrt(5/(12*np.pi)) * n[:, 1] * n[:, 2] * v
-    b[7, :, :] = 3/2*np.sqrt(5/(12*np.pi)) * (np.square(n[:, 0]) - np.square(n[:, 1])) * v
-    b[8, :, :] = 3*np.sqrt(5/(12*np.pi)) * n[:, 0] * n[:, 1] * v
+## Get triangle faces
+#f = importObj('./masks2v2/', shape = 0, dataToImport = ['f'])[0][0, :, :] - 1
+#f = np.r_[f[:, [0, 1, 2]], f[:, [0, 2, 3]]]
+#
+## Calculate normals of vertex points
+#idMean = np.load('./models/idMean.npy')
+#idMean = np.reshape(idMean, (idMean.size//3, 3))
+#
+#fNorm = np.cross(idMean[f[:, 0], :] - idMean[f[:, 1], :], idMean[f[:, 0], :] - idMean[f[:, 2], :])
+#
+#vertex2face = [np.where(np.isin(f, vertexInd).any(axis = 1))[0].tolist() for vertexInd in range(idMean.shape[0])]
+#
+#vNorm = np.array([np.sum(fNorm[faces, :], axis = 0) for faces in vertex2face])
+#
+#vNorm = normalize(vNorm)
+#
+#def SHbasis(v, n):
+#    """
+#    SH basis functions                               lm
+#        1/np.sqrt(4*np.pi)                          Y00
+#        np.sqrt(3/(4*np.pi))*nz                     Y10
+#        np.sqrt(3/(4*np.pi))*nx                     Y11e
+#        np.sqrt(3/(4*np.pi))*ny                     Y11o
+#        1/2*np.sqrt(5/(4*np.pi))*(3*nz^2 - 1)       Y20
+#        3*np.sqrt(5/(12*np.pi))*nx*nz               Y21e
+#        3*np.sqrt(5/(12*np.pi))*ny*nz               Y21o
+#        3/2*np.sqrt(5/(12*np.pi))*(nx^2 - ny^2)     Y22e
+#        3*np.sqrt(5/(12*np.pi))*nx*ny               Y22o
+#    
+#    For a sphere, the Lambertian kernel has most of its energy in the first three bands of the spherical harmonic basis functions (above). This implies that Lambertian reflectance functions can be well-approximated by these low-order SH bases.
+#    """
+#    # Lambertian kernel coefficients indexed by l
+##    k = np.array([np.sqrt(np.pi)/2, np.sqrt(np.pi/3), np.sqrt(5*np.pi)/8])
+#    
+#    # Normalization factor for SH
+##    norm = np.array([np.sqrt((4*np.pi)), np.sqrt((4*np.pi)/3), np.sqrt((4*np.pi)/5)])
+#    
+#    b = np.empty((9, v.shape))
+#    b[0, :, :] = 1/np.sqrt(4*np.pi) * v
+#    b[1, :, :] = np.sqrt(3/(4*np.pi)) * n[:, 2] * v
+#    b[2, :, :] = np.sqrt(3/(4*np.pi)) * n[:, 0] * v
+#    b[3, :, :] = np.sqrt(3/(4*np.pi)) * n[:, 1] * v
+#    b[4, :, :] = 1/2*np.sqrt(5/(4*np.pi)) * (3*np.power(n[:, 2]) - 1) * v
+#    b[5, :, :] = 3*np.sqrt(5/(12*np.pi)) * n[:, 0] * n[:, 2] * v
+#    b[6, :, :] = 3*np.sqrt(5/(12*np.pi)) * n[:, 1] * n[:, 2] * v
+#    b[7, :, :] = 3/2*np.sqrt(5/(12*np.pi)) * (np.square(n[:, 0]) - np.square(n[:, 1])) * v
+#    b[8, :, :] = 3*np.sqrt(5/(12*np.pi)) * n[:, 0] * n[:, 1] * v
 
 # Load 3D landmarks and find their vertex indices
 #v = importObj('./mask2v2.obj', shape = 0, dataToImport = ['v'])[0]
