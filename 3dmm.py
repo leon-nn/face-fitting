@@ -34,6 +34,13 @@ from sklearn.preprocessing import normalize
 from scipy.optimize import least_squares
 from scipy.optimize import minimize
 from scipy.linalg import rq
+from scipy.io import loadmat
+
+import h5py
+
+class Bunch(object):
+  def __init__(self, adict):
+    self.__dict__.update(adict)
 
 def onpick3(event):
     """
@@ -347,46 +354,76 @@ def initialRegistration(A, B):
     
     return np.r_[angle, t, s]
 
-@jit
-def processShapes(dirName, saveDirName):
+def processBFM2017(fName, fNameLandmarks):
     """
-    Go through all 150 testers in the dirName directory and find the mean shape, eigenvalues, and eigenvectors for each of the 47 expressions. Save these into .npy files in the saveDirName directory.
+    Read the face models and landmarks from the Basel Face Model 2017 dataset. Input the filename of the .h5 file and the filename of a .txt file containing the text detailing the landmark locations.
     """
-    for shape in range(47):
-        # Read the 'v' coordinates from an .obj file into a NumPy array
-        geoV = importObj(dirName, shape, dataToImport = ['v'], pose = 47)[0]
-        
-        # Reshape the coordinates so that observations are along the rows
-        geoV = np.reshape(geoV, (150, 11510*3))
-        
-        # Find the eigenvalues, eigenvectors, and mean shape of the vertices
-        eigValS, eigVecS, meanS = PCA(geoV)
-        
-        # Save into .npy format
-        np.save(saveDirName + 'shape' + str(shape) + 'eigValS', eigValS)
-        np.save(saveDirName + 'shape' + str(shape) + 'eigVecS', eigVecS)
-        np.save(saveDirName + 'shape' + str(shape) + 'meanS', meanS)
-
-@jit
-def processTextures(dirName, saveDirName):
-    """
-    Go through all 150 testers in the dirName directory and find the mean texture, eigenvalues, and eigenvectors for each of the 20 poses. Save these into .npy files in the saveDirName directory.
-    """
-    for pose in range(20):
-        # Get the RGB values referenced by the texture vertices
-        text = getTexture(dirName, pose)
-        
-        # Reshape the coordinates so that observations are along the rows
-        text = np.reshape(text, (150, 11558*3))
-        
-        # Find the eigenvalues, eigenvectors, and mean shape of the vertices
-        eigVal, eigVec, mean = PCA(text)
-        
-        # Save into .npy format
-        np.save(saveDirName + 'pose' + str(pose) + 'eigValT', eigVal)
-        np.save(saveDirName + 'pose' + str(pose) + 'eigVecT', eigVec)
-        np.save(saveDirName + 'pose' + str(pose) + 'meanT', mean)
-
+    data = h5py.File(fName, 'r')
+    
+    # Identity
+    idMean = np.empty(data.get('/shape/model/mean').shape)
+    data.get('/shape/model/mean').read_direct(idMean)
+    idVar = np.empty(data.get('/shape/model/noiseVariance').shape)
+    data.get('/shape/model/noiseVariance').read_direct(idVar)
+    idEvec = np.empty(data.get('/shape/model/pcaBasis').shape)
+    data.get('/shape/model/pcaBasis').read_direct(idEvec)
+    idEval = np.empty(data.get('/shape/model/pcaVariance').shape)
+    data.get('/shape/model/pcaVariance').read_direct(idEval)
+    
+    # Expression
+    expMean = np.empty(data.get('/expression/model/mean').shape)
+    data.get('/expression/model/mean').read_direct(expMean)
+    expVar = np.empty(data.get('/expression/model/noiseVariance').shape)
+    data.get('/expression/model/noiseVariance').read_direct(expVar)
+    expEvec = np.empty(data.get('/expression/model/pcaBasis').shape)
+    data.get('/expression/model/pcaBasis').read_direct(expEvec)
+    expEval = np.empty(data.get('/expression/model/pcaVariance').shape)
+    data.get('/expression/model/pcaVariance').read_direct(expEval)
+    
+    # Texture
+    texMean = np.empty(data.get('/color/model/mean').shape)
+    data.get('/color/model/mean').read_direct(texMean)
+    texVar = np.empty(data.get('/color/model/noiseVariance').shape)
+    data.get('/color/model/noiseVariance').read_direct(texVar)
+    texEvec = np.empty(data.get('/color/model/pcaBasis').shape)
+    data.get('/color/model/pcaBasis').read_direct(texEvec)
+    texEval = np.empty(data.get('/color/model/pcaVariance').shape)
+    data.get('/color/model/pcaVariance').read_direct(texEval)
+    
+    # Triangle face indices
+    face = np.empty(data.get('/shape/representer/cells').shape, dtype = 'int')
+    data.get('/shape/representer/cells').read_direct(face)
+    
+    # Find vertex indices corresponding to the 40 given landmark vertices
+    points = np.empty(data.get('/shape/representer/points').shape)
+    data.get('/shape/representer/points').read_direct(points)
+    
+    with open(fNameLandmarks, 'r') as fd:
+        landmark = []
+        for line in fd:
+            landmark.append([x for x in line.split(' ')])
+    
+    landmark = np.array(landmark)
+    landmarkName = landmark[:, 0].tolist()
+    landmark = landmark[:, 2:].astype('float')
+    
+    NN = NearestNeighbors(n_neighbors = 1, metric = 'l2')
+    NN.fit(points.T)
+    landmarkInd = NN.kneighbors(landmark)[1].squeeze()
+    
+    # Reshape to be compatible with fitting code
+    numVertices = idMean.size // 3
+    idMean = idMean.reshape((3, numVertices), order = 'F')
+    idEvec = idEvec.reshape((3, numVertices, 199), order = 'F')
+    expMean = expMean.reshape((3, numVertices), order = 'F')
+    expEvec = expEvec.reshape((3, numVertices, 100), order = 'F')
+    texMean = texMean.reshape((3, numVertices), order = 'F')
+    texEvec = texEvec.reshape((3, numVertices, 199), order = 'F')
+    face = face.T + 1
+    
+    # Save into an .npz uncompressed file
+    np.savez('./models/bfm2017', face = face, idMean = idMean, idEvec = idEvec, idEval = idEval, expMean = expMean, expEvec = expEvec, expEval = expEval, texMean = texMean, texEvec = texEvec, texEval = texEval, landmark = landmark, landmarkInd = landmarkInd, landmarkName = landmarkName, numVertices = numVertices)
+    
 def generateModels(dirName, saveDirName = './'):
     """
     Generate eigenmodels of face meshes for (1) the neutral face and (2) the expressions. Save eigenvectors, eigenvalues, and means into .npy arrays.
@@ -400,13 +437,13 @@ def generateModels(dirName, saveDirName = './'):
     print('Loading neutral faces')
     vNeu = importObj(dirName, shape = 0, dataToImport = ['v'])[0]
     vNeu = np.reshape(vNeu, (150, vNeu.shape[1]*3))
-#    start = clock()
-#    evalNeu, evecNeu, meanNeu = PCA(vNeu)
-#    print(clock() - start)
-#    
-#    np.save(saveDirName + 'idEval', evalNeu)
-#    np.save(saveDirName + 'idEvec', evecNeu)
-#    np.save(saveDirName + 'idMean', meanNeu)
+    start = clock()
+    evalNeu, evecNeu, meanNeu = PCA(vNeu)
+    print(clock() - start)
+    
+    np.save(saveDirName + 'idEval', evalNeu)
+    np.save(saveDirName + 'idEvec', evecNeu)
+    np.save(saveDirName + 'idMean', meanNeu)
     
     # Expressions (from the 46 expression blendshapes)
     vExp = np.empty((150*46, vNeu.shape[1]))
@@ -423,74 +460,19 @@ def generateModels(dirName, saveDirName = './'):
     np.save(saveDirName + 'expEval', evalExp)
     np.save(saveDirName + 'expEvec', evecExp)
 
-def writeShape(mean, eigVec, fNameIn = None, f = None, a = None, fNameOut = 'test.obj'):
-    """
-    Given a mean face shape, the eigenvectors, and eigenvector parameters a, write a new face shape out to an .obj file.
-    """
-    
-    # Add the .obj extension if necessary
-    if not fNameIn.endswith('.obj'):
-        fNameIn += '.obj'
-    if not fNameOut.endswith('.obj'):
-        fNameOut += '.obj'
-    
-    # Find the dimension N of the data and the number of eigenvectors M
-    N, M = eigVec.shape
-    
-    # Make a random set of eigenvector parameters if not user-provided
-    if a is None:
-        a = np.random.rand(M)
-    
-    # Construct the new face shape S
-    S = mean + np.dot(eigVec, a)
-    
-    # Reshape so that each vertex is in its own row
-    S = np.reshape(S,(N//3, 3))
-    
-    if fNameIn is not None and f is None:
-        with open(fNameIn, 'r') as fi:
-            with open(fNameOut, 'w') as fo:
-                # Initialize counter for the vertex index
-                vertexInd = 0
-                
-                # Iterate through the lines in the template file
-                for line in fi:
-                    # If a line starts with 'v ', then we replace it with the vertex coordinate with the index corresponding to the line number
-                    if line.startswith('v '):
-                        # Keep 6 digits after the decimal to follow the formatting in the template file
-                        fo.write('v ' + '{:.6f}'.format(S[vertexInd, 0]) + ' ' + '{:.6f}'.format(S[vertexInd, 1]) + ' ' + '{:.6f}'.format(S[vertexInd, 2]) + '\n')
-                        
-                        # Increment the vertex index counter
-                        vertexInd += 1
-                        
-                    # Else, the line must end with 'vt' or 'f', so we copy from the template file because those coordinates are in correspondence
-                    elif line.startswith('vt') or line.startswith('f'):
-                        fo.write(line)
-                    
-                    else:
-                        continue
-    
-    # If a face variable is provided
-    elif fNameIn is None and f is not None:
-        with open (fNameOut, 'w') as fo:
-            for vertex in S:
-                fo.write('v ' + '{:.6f}'.format(vertex[0]) + ' ' + '{:.6f}'.format(vertex[1]) + ' ' + '{:.6f}'.format(vertex[2]) + '\n')
-            
-            for face in f:
-                fo.write('f ' + str(face[0]) + ' ' + str(face[1]) + ' ' + str(face[2]) + ' ' + str(face[3]) + '\n')
-
-def exportObj(v, vt = None, f = None, fNameIn = None, fNameOut = 'test.obj'):
+def exportObj(v, c = None, vt = None, f = None, fNameIn = None, fNameOut = 'test.obj'):
     """
     Write vertices to an .obj file.
     """
     # Make sure x, y, z vertex coordinates are along the columns
-    if v.shape[1] != 3:
+    if (c is None) and (v.shape[1] != 3):
         v = v.T
     
     # Add the .obj extension if necessary
     if not fNameOut.endswith('.obj'):
         fNameOut += '.obj'
     
+    # If user provides an .obj file for the face specification
     if fNameIn is not None:
         if not fNameIn.endswith('.obj'):
             fNameIn += '.obj'
@@ -523,11 +505,15 @@ def exportObj(v, vt = None, f = None, fNameIn = None, fNameOut = 'test.obj'):
                     
                     else:
                         continue
-        
+    # If user provides a NumPy array for the face specification, or doesn't provide one at all (just to write out the vertices)
     else:
         with open(fNameOut, 'w') as fo:
-            for vertex in v:
-                fo.write('v ' + '{:.6f}'.format(vertex[0]) + ' ' + '{:.6f}'.format(vertex[1]) + ' ' + '{:.6f}'.format(vertex[2]) + '\n')
+            if c is None:
+                for vertex in v:
+                    fo.write('v ' + '{:.6f}'.format(vertex[0]) + ' ' + '{:.6f}'.format(vertex[1]) + ' ' + '{:.6f}'.format(vertex[2]) + '\n')
+            else:
+                for i in range(v.shape[0]):
+                    fo.write('v ' + '{:.6f}'.format(v[i, 0]) + ' ' + '{:.6f}'.format(v[i, 1]) + ' ' + '{:.6f}'.format(v[i, 2]) + ' ' + '{:.6f}'.format(c[i, 0]) + ' ' + '{:.6f}'.format(c[i, 1]) + ' ' + '{:.6f}'.format(c[i, 2]) + '\n')
             
             if vt is not None:
                 for text in vt:
@@ -764,51 +750,76 @@ dirName = '/home/nguyen/Documents/Data/facewarehouse/FaceWarehouse_Data_0/'
 #f = f[0, :, :] - 1
 #vNew, fNew = subdivide(v, f)
 
-# Load identity (neutral face) eigenmodel
-idEvec = np.load('./models/idEvec.npy')
-idEval = np.load('./models/idEval.npy')
-idMean = np.load('./models/idMean.npy')
-#idEvec = np.reshape(idEvec, (idMean.size//3, 3, 80))
-idEvec = np.reshape(idEvec, (3, idEvec.shape[0]//3, 80), order = 'F')
-#idMean = np.reshape(idMean, (idMean.size//3, 3))
-idMean = np.reshape(idMean, (3, idMean.size//3), order = 'F')
+## Load identity (neutral face) eigenmodel
+#idEvec = np.load('./models/idEvec.npy')
+#idEval = np.load('./models/idEval.npy')
+#idMean = np.load('./models/idMean.npy')
+##idEvec = np.reshape(idEvec, (idMean.size//3, 3, 80))
+#idEvec = np.reshape(idEvec, (3, idEvec.shape[0]//3, 80), order = 'F')
+##idMean = np.reshape(idMean, (idMean.size//3, 3))
+#idMean = np.reshape(idMean, (3, idMean.size//3), order = 'F')
+#
+## Load expression eigenmodel
+#expEvec = np.load('./models/expEvec.npy')
+#expEval = np.load('./models/expEval.npy')
+#expEvec = np.reshape(expEvec, (3, expEvec.shape[0]//3, 76), order = 'F')
 
-# Load expression eigenmodel
-expEvec = np.load('./models/expEvec.npy')
-expEval = np.load('./models/expEval.npy')
-expEvec = np.reshape(expEvec, (3, expEvec.shape[0]//3, 76), order = 'F')
+#processBFM2017('/home/nguyen/Documents/Data/model2017-1_face12_nomouth.h5', '/home/nguyen/Documents/Data/bfm2017landmarks.txt')
+m = Bunch(np.load('./models/bfm2017.npz'))
 
-# Load 3D vertex indices of landmarks and find their vertices on the neutral face
-landmarkInds3D = np.load('./data/landmarkInds3D.npy')
+bfm2fw = np.array([0, 2, 3, 4, 5, 6, 7, 8, 9, 11, 13, 14, 16, 17, 18, 21, 22, 23, 24, 25, 27, 29, 30, 32, 33, 34, 37, 38, 39])
+fw2bfm = np.array([7, 59, 55, 62, 49, 39, 65, 34, 15, 18, 33, 31, 32, 52, 50, 45, 41, 40, 30, 21, 24, 29, 27, 28, 46, 48, 44, 37, 38])
+
+idCoef = np.zeros(m.idEval.shape)
+idCoef[0] = 1
+expCoef = np.zeros(m.expEval.shape)
+expCoef[0] = 1
+texCoef = np.zeros(m.texEval.shape)
+texCoef[0] = 1
+#source = m.idMean + np.tensordot(m.idEvec, idCoef, axes = 1) + np.tensordot(m.expEvec, expCoef, axes = 1)
+#sourceColor = m.texMean + np.tensordot(m.texEvec, texCoef, axes = 1)
+#exportObj(source.T, c = sourceColor.T, f = m.face)
+#exportObj(source[:, m.landmarkInd].T, fNameOut = 'landmarksBFM')
+
+#data = loadmat('/home/nguyen/Downloads/PublicMM1/01_MorphableModel.mat', variable_names = ['shapeEV', 'shapeMU', 'shapePC', 'texEV', 'texMU', 'texPC', 'tl'])
+#numVertices = data['shapeMU'].size // 3
+#idMean = data['shapeMU'].reshape((numVertices, 3))
+#texMean = data['texMU'].reshape((numVertices, 3))
+#exportObj(idMean, c = texMean, f = data['tl'])
+
+## Load 3D vertex indices of landmarks and find their vertices on the neutral face
+#landmarkInds3D = np.load('./data/landmarkInds3D.npy')
+landmarkInds3D = m.landmarkInd[bfm2fw]
 
 pose = 7
 tester = 7
 
 # Gather 2D landmarks that correspond to manually chosen 3D landmarks
-landmarkInds2D = np.array([0, 1, 4, 7, 10, 13, 14, 27, 29, 31, 33, 46, 49, 52, 55, 65])
+#landmarkInds2D = np.array([0, 1, 4, 7, 10, 13, 14, 27, 29, 31, 33, 46, 49, 52, 55, 65])
+landmarkInds2D = fw2bfm
 landmarks = np.load('./data/landmarks2D.npy')[pose, tester, landmarkInds2D, :]
 landmarkPixelInd = (landmarks * np.array([639, 479])).astype(int)
 landmarkPixelInd[:, 1] = 479 - landmarkPixelInd[:, 1]
 
-## Get target 3D coordinates of depth maps at the 16 landmark locations
-depth = np.load('./data/depthMaps.npy')[pose, tester, :, :]
-
-targetLandmark, nonZeroDepth = perspectiveTransformKinect(np.c_[landmarkPixelInd[:, 0], landmarkPixelInd[:, 1], depth[landmarkPixelInd[:, 1], landmarkPixelInd[:, 0]]])
-
-#target = perspectiveTransformKinect(np.c_[np.tile(np.arange(640), 480), np.repeat(np.arange(480), 640), depth.flatten()])[0]
-
-#plt.imshow(depth[pose, tester, :, :])
-
-#plt.figure()
-#plt.scatter(targetLandmark[:, 0], targetLandmark[:, 1], s=1)
-#plt.figure()
-#plt.scatter(target[:, 0], target[:, 1], s=1)
-
-# Initialize parameters
-idCoef = np.zeros(idEval.shape)
-idCoef[0] = 1
-expCoef = np.zeros(expEval.shape)
-expCoef[0] = 1
+### Get target 3D coordinates of depth maps at the 16 landmark locations
+#depth = np.load('./data/depthMaps.npy')[pose, tester, :, :]
+#
+#targetLandmark, nonZeroDepth = perspectiveTransformKinect(np.c_[landmarkPixelInd[:, 0], landmarkPixelInd[:, 1], depth[landmarkPixelInd[:, 1], landmarkPixelInd[:, 0]]])
+#
+##target = perspectiveTransformKinect(np.c_[np.tile(np.arange(640), 480), np.repeat(np.arange(480), 640), depth.flatten()])[0]
+#
+##plt.imshow(depth[pose, tester, :, :])
+#
+##plt.figure()
+##plt.scatter(targetLandmark[:, 0], targetLandmark[:, 1], s=1)
+##plt.figure()
+##plt.scatter(target[:, 0], target[:, 1], s=1)
+#
+## Initialize parameters
+#idCoef = np.zeros(idEval.shape)
+#idCoef[0] = 1
+#expCoef = np.zeros(expEval.shape)
+#expCoef[0] = 1
 
 # Do initial registration between the 16 corresponding landmarks on the depth map and the face model
 #source = idMean + np.tensordot(idEvec, idCoef, axes = 1) + np.tensordot(expEvec, expCoef, axes = 1)
@@ -850,8 +861,8 @@ uvCentered = landmarkPixelInd - c2D
 s2D = np.linalg.norm(uvCentered, axis = 1).mean()
 x = np.c_[uvCentered / s2D * np.sqrt(2), np.ones(numLandmarks)]
 
-c3D = np.mean(idMean[:, landmarkInds3D].T, axis = 0)
-xyzCentered = idMean[:, landmarkInds3D].T - c3D
+c3D = np.mean(m.idMean[:, landmarkInds3D].T, axis = 0)
+xyzCentered = m.idMean[:, landmarkInds3D].T - c3D
 s3D = np.linalg.norm(xyzCentered, axis = 1).mean()
 X = np.c_[xyzCentered / s3D * np.sqrt(3), np.ones(numLandmarks)]
 
@@ -897,12 +908,12 @@ def camWithShape(param, x, Xmu, Xid, Xexp, idEval, expEval):
     
     return np.linalg.norm(residuals, axis = 1).sum() + regularize
 
-Lmu = np.r_[idMean[:, landmarkInds3D], np.ones((1, landmarkInds3D.size))]
-Lid = np.concatenate((idEvec[:, landmarkInds3D, :], np.zeros((1, landmarkInds3D.size, idCoef.size))), axis = 0)
-Lexp = np.concatenate((expEvec[:, landmarkInds3D, :], np.zeros((1, landmarkInds3D.size, expCoef.size))), axis = 0)
-x = np.c_[landmarkPixelInd, np.ones(16)]
+Lmu = np.r_[m.idMean[:, landmarkInds3D], np.ones((1, landmarkInds3D.size))]
+Lid = np.concatenate((m.idEvec[:, landmarkInds3D, :], np.zeros((1, landmarkInds3D.size, idCoef.size))), axis = 0)
+Lexp = np.concatenate((m.expEvec[:, landmarkInds3D, :], np.zeros((1, landmarkInds3D.size, expCoef.size))), axis = 0)
+x = np.c_[landmarkPixelInd, np.ones(landmarkInds3D.size)]
 
-param = minimize(camWithShape, np.r_[P.flatten(), idCoef, expCoef], args = (x, Lmu, Lid, Lexp, idEval, expEval))
+param = minimize(camWithShape, np.r_[P.flatten(), idCoef, expCoef], args = (x, Lmu, Lid, Lexp, m.idEval, m.expEval))
 
 # Separate variates in parameter vector
 P = param.x[:12].reshape((3, 4))
@@ -914,7 +925,7 @@ K, R = rq(P[:, :3])
 t = np.linalg.inv(K).dot(P[:, -1])
 
 # Project 3D model into 2D plane
-fitting = K[:2, :].dot(R.dot(idMean + np.tensordot(idEvec, idCoef, axes = 1) + np.tensordot(expEvec, expCoef, axes = 1)) + t[:, np.newaxis])
+fitting = K[:2, :].dot(R.dot(m.idMean + np.tensordot(m.idEvec, idCoef, axes = 1) + np.tensordot(m.expEvec, expCoef, axes = 1)) + t[:, np.newaxis])
 
 # Plot the projected 3D model on top of the input RGB image
 fName = dirName + 'Tester_' + str(tester+1) + '/TrainingPose/pose_' + str(pose) + '.png'
@@ -924,8 +935,8 @@ plt.hold(True)
 plt.scatter(fitting[0, :], fitting[1, :], s = 0.1, c = 'g')
 plt.hold(True)
 plt.scatter(fitting[0, landmarkInds3D], fitting[1, landmarkInds3D], s = 2, c = 'b')
-#plt.hold(True)
-#plt.scatter(landmarkPixelInd[:, 0], landmarkPixelInd[:, 1], c = 'b')
+plt.hold(True)
+plt.scatter(landmarkPixelInd[:, 0], landmarkPixelInd[:, 1], s = 2, c = 'r')
 
 """
 Some stuff for spherical harmonic illumination model that will be developed
@@ -994,18 +1005,27 @@ Some stuff for spherical harmonic illumination model that will be developed
 # Confirm that 16 2D landmarks are in correspondence across poses and testers
 #pose = 0
 #tester = 0
+#landmarks = np.load('./data/landmarks2D.npy')[pose, tester, :, :]
+#landmarkPixelInd = (landmarks * np.array([639, 479])).astype(int)
+#landmarkPixelInd[:, 1] = 479 - landmarkPixelInd[:, 1]
 #fName = dirName + 'Tester_' + str(tester+1) + '/TrainingPose/pose_' + str(pose) + '.png'
 #img = mpimg.imread(fName)
+
+#bfm2fw = [0, 2, 3, 4, 5, 6, 7, 8, 9, 11, 13, 14, 16, 17, 18, 21, 22, 23, 24, 25, 27, 29, 30, 32, 33, 34, 37, 38, 39]
+#fw2bfm = [7, 59, 55, 62, 49, 39, 65, 34, 15, 18, 33, 31, 32, 52, 50, 45, 41, 40, 30, 21, 24, 29, 27, 28, 46, 48, 44, 37, 38]
+
+#x = landmarks16[pose, tester, :, 0]
+#y = landmarks16[pose, tester, :, 1]
+#plt.scatter(x*640, (1-y)*480, s = 1)
+#x = landmarkPixelInd[fw2bfm, 0]
+#y = landmarkPixelInd[fw2bfm, 1]
+#x = landmarkPixelInd[:, 0]
+#y = landmarkPixelInd[:, 1]
+#plt.scatter(x, y, s = 1, c = 'r')
+
+#fig, ax = plt.subplots()
 #plt.imshow(img)
 #plt.hold(True)
-##x = landmarks16[pose, tester, :, 0]
-##y = landmarks16[pose, tester, :, 1]
-##plt.scatter(x*640, (1-y)*480, s = 1)
-#x = landmarks16NN[pose, tester, :, 0]
-#y = landmarks16NN[pose, tester, :, 1]
-#plt.scatter(x, y, s = 1, c = 'r')
-#
-#fig, ax = plt.subplots()
 #plt.imshow(depth[pose, tester, :, :].astype(float))
 #plt.hold(True)
 #x = landmarks16NN[pose, tester, :, 0]
