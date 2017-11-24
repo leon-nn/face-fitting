@@ -36,7 +36,7 @@ from scipy.optimize import minimize
 from scipy.linalg import rq
 from scipy.io import loadmat
 
-import h5py
+#import h5py
 
 class Bunch(object):
   def __init__(self, adict):
@@ -746,8 +746,8 @@ def calcNormals(R, m, idCoef, expCoef):
     """
     Calculate the per-vertex normal vectors for a model given shape coefficients
     """
-#    X = m.idMean
-    X = R.dot(m.idMean + np.tensordot(m.idEvec, idCoef, axes = 1) + np.tensordot(m.expEvec, expCoef, axes = 1)) + t[:, np.newaxis]
+    X = m.idMean
+#    X = R.dot(m.idMean + np.tensordot(m.idEvec, idCoef, axes = 1) + np.tensordot(m.expEvec, expCoef, axes = 1)) + t[:, np.newaxis]
     
     faceNorm = np.cross(X[:, m.face[:, 0]] - X[:, m.face[:, 1]], X[:, m.face[:, 0]] - X[:, m.face[:, 2]], axisa = 0, axisb = 0)
     
@@ -828,6 +828,8 @@ m.expEval = m.expEval[:76]
 m.texEvec = m.texEvec[:, :, :80]
 m.texEval = m.texEval[:80]
 
+
+
 bfm2fw = np.array([0, 2, 3, 4, 5, 6, 7, 8, 13, 14, 16, 17, 18, 21, 22, 23, 24, 29, 30, 32, 33, 34, 37, 38, 39])
 fw2bfm = np.array([7, 59, 55, 62, 49, 39, 65, 34, 33, 31, 32, 52, 50, 45, 41, 40, 30, 29, 27, 28, 46, 48, 44, 37, 38])
 
@@ -837,6 +839,14 @@ expCoef = np.zeros(m.expEval.shape)
 expCoef[0] = 1
 texCoef = np.zeros(m.texEval.shape)
 texCoef[0] = 1
+
+vNorm = calcNormals(np.zeros(3), m, idCoef, expCoef)
+b = shBasis(m.texMean, vNorm)
+
+b = (b + 1) / 2
+
+for i in range(9):
+    exportObj(m.idMean.T, c = b[:, :, i].T, f = m.face, fNameOut = 'sh' + str(i+1))
 
 ## Load 3D vertex indices of landmarks and find their vertices on the neutral face
 #landmarkInds3D = np.load('./data/landmarkInds3D.npy')
@@ -967,42 +977,42 @@ def camWithShape(param, x, m, lm2d, lm3d):
     
     return Elan + Ereg
 
-param = minimize(camWithShape, np.r_[P.flatten(), idCoef, expCoef], args = (x, m, landmarkPixelInd, landmarkInds3D))
-
-# Separate variates in parameter vector
-P = param.x[:12].reshape((3, 4))
-idCoef = param.x[12: 12 + m.idEval.size]
-expCoef = param.x[12 + m.idEval.size:]
-
-# Get inner parameters from projection matrix via RQ decomposition
-K, R = rq(P[:, :3])
-angles = rotMat2angle(R)
-t = np.linalg.inv(K).dot(P[:, -1])
-
-# Project 3D model into 2D plane
-shape = m.idMean + np.tensordot(m.idEvec, idCoef, axes = 1) + np.tensordot(m.expEvec, expCoef, axes = 1)
-fitting = K.dot(R.dot(shape) + t[:, np.newaxis])
+#param = minimize(camWithShape, np.r_[P.flatten(), idCoef, expCoef], args = (x, m, landmarkPixelInd, landmarkInds3D))
+#
+## Separate variates in parameter vector
+#P = param.x[:12].reshape((3, 4))
+#idCoef = param.x[12: 12 + m.idEval.size]
+#expCoef = param.x[12 + m.idEval.size:]
+#
+## Get inner parameters from projection matrix via RQ decomposition
+#K, R = rq(P[:, :3])
+#angles = rotMat2angle(R)
+#t = np.linalg.inv(K).dot(P[:, -1])
+#
+## Project 3D model into 2D plane
+#shape = m.idMean + np.tensordot(m.idEvec, idCoef, axes = 1) + np.tensordot(m.expEvec, expCoef, axes = 1)
+#fitting = K.dot(R.dot(shape) + t[:, np.newaxis])
 
 # Plot the projected 3D model on top of the input RGB image
-fName = dirName + 'Tester_' + str(tester+1) + '/TrainingPose/pose_' + str(pose) + '.png'
-img = mpimg.imread(fName)
-plt.imshow(img)
-plt.hold(True)
-plt.scatter(fitting[0, :], fitting[1, :], s = 0.1, c = 'g')
-plt.hold(True)
-plt.scatter(fitting[0, landmarkInds3D], fitting[1, landmarkInds3D], s = 3, c = 'b')
-plt.hold(True)
-plt.scatter(landmarkPixelInd[:, 0], landmarkPixelInd[:, 1], s = 2, c = 'r')
+#fName = dirName + 'Tester_' + str(tester+1) + '/TrainingPose/pose_' + str(pose) + '.png'
+#img = mpimg.imread(fName)
+#plt.imshow(img)
+#plt.hold(True)
+#plt.scatter(fitting[0, :], fitting[1, :], s = 0.1, c = 'g')
+#plt.hold(True)
+#plt.scatter(fitting[0, landmarkInds3D], fitting[1, landmarkInds3D], s = 3, c = 'b')
+#plt.hold(True)
+#plt.scatter(landmarkPixelInd[:, 0], landmarkPixelInd[:, 1], s = 2, c = 'r')
 
-vertex2pixel = fitting[:2, :].T.astype(int)
-pixelInd, ind, counts = np.unique(vertex2pixel, return_index = True, return_counts = True, axis = 0)
-zBuffer = np.empty(ind.size, dtype = int)
-for i in range(ind.size):
-    if counts[i] == 1:
-        zBuffer[i] = ind[i]
-    else:
-        inds = np.where((vertex2pixel[:, 0] == pixelInd[i, 0]) & (vertex2pixel[:, 1] == pixelInd[i, 1]))[0]
-        zBuffer[i] = inds[np.argmin(fitting[2, inds])]
+#vertex2pixel = fitting[:2, :].T.astype(int)
+#pixelInd, ind, counts = np.unique(vertex2pixel, return_index = True, return_counts = True, axis = 0)
+#zBuffer = np.empty(ind.size, dtype = int)
+#for i in range(ind.size):
+#    if counts[i] == 1:
+#        zBuffer[i] = ind[i]
+#    else:
+#        inds = np.where((vertex2pixel[:, 0] == pixelInd[i, 0]) & (vertex2pixel[:, 1] == pixelInd[i, 1]))[0]
+#        zBuffer[i] = inds[np.argmin(fitting[2, inds])]
 
 #mask = np.zeros(img.shape[:2], dtype = bool)
 #mask.flat[np.ravel_multi_index(vertex2pixel[zBuffer, ::-1].T, img.shape[:2])] = True
@@ -1062,9 +1072,9 @@ def fitter(param, x, vis, m, lm2d, lm3d):
     
     return Ecol + 10*Elan + Ereg
 
-x = np.reshape(img, (np.prod(img.shape[:2]), 3))
-x = x[np.ravel_multi_index(vertex2pixel[zBuffer, ::-1].T, img.shape[:2]), :]
-param2 = minimize(textureFitter, texCoef, args = (x, zBuffer, m))
+#x = np.reshape(img, (np.prod(img.shape[:2]), 3))
+#x = x[np.ravel_multi_index(vertex2pixel[zBuffer, ::-1].T, img.shape[:2]), :]
+#param2 = minimize(textureFitter, texCoef, args = (x, zBuffer, m))
 #param2 = minimize(fitter, np.r_[K[:2, :].flatten(), angles, t, idCoef, expCoef, texCoef], args = (x, m, landmarkPixelInd, landmarkInds3D))
 
 #texCoef = param2.x
@@ -1078,15 +1088,15 @@ param2 = minimize(textureFitter, texCoef, args = (x, zBuffer, m))
 
 # Project 3D model into 2D plane
 #fitting = K2.dot(R2.dot(m.idMean + np.tensordot(m.idEvec, idCoef2, axes = 1) + np.tensordot(m.expEvec, expCoef2, axes = 1)) + t2[:, np.newaxis])
-texture = m.texMean + np.tensordot(m.texEvec, texCoef, axes = 1)
+#texture = m.texMean + np.tensordot(m.texEvec, texCoef, axes = 1)
 #exportObj(shape.T, c = texture.T, f = m.face, fNameOut = 'texTest')
 
-reconstImg = np.zeros(img.shape)
-reconstImg[:, :, 0].flat[np.ravel_multi_index(vertex2pixel[zBuffer, ::-1].T, img.shape[:2])] = texture[0, zBuffer]
-reconstImg[:, :, 1].flat[np.ravel_multi_index(vertex2pixel[zBuffer, ::-1].T, img.shape[:2])] = texture[1, zBuffer]
-reconstImg[:, :, 2].flat[np.ravel_multi_index(vertex2pixel[zBuffer, ::-1].T, img.shape[:2])] = texture[2, zBuffer]
-plt.figure()
-plt.imshow(reconstImg)
+#reconstImg = np.zeros(img.shape)
+#reconstImg[:, :, 0].flat[np.ravel_multi_index(vertex2pixel[zBuffer, ::-1].T, img.shape[:2])] = texture[0, zBuffer]
+#reconstImg[:, :, 1].flat[np.ravel_multi_index(vertex2pixel[zBuffer, ::-1].T, img.shape[:2])] = texture[1, zBuffer]
+#reconstImg[:, :, 2].flat[np.ravel_multi_index(vertex2pixel[zBuffer, ::-1].T, img.shape[:2])] = texture[2, zBuffer]
+#plt.figure()
+#plt.imshow(reconstImg)
 
 # Plot the projected 3D model on top of the input RGB image
 #fName = dirName + 'Tester_' + str(tester+1) + '/TrainingPose/pose_' + str(pose) + '.png'
@@ -1109,8 +1119,8 @@ plt.imshow(reconstImg)
 
 #X = m.idMean
 #X = R.dot(m.idMean + np.tensordot(m.idEvec, idCoef, axes = 1) + np.tensordot(m.expEvec, expCoef, axes = 1)) + t[:, np.newaxis]
-normals = calcNormals(R, m, idCoef, expCoef)
-shBases = shBasis(texture, normals)
+#normals = calcNormals(R, m, idCoef, expCoef)
+#shBases = shBasis(texture, normals)
 
 #exportObj(X.T, c = shb[:, :, 8].T, f = m.face, fNameOut = 'sh9')
 
