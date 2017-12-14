@@ -24,6 +24,7 @@ import matplotlib.image as mpimg
 
 from time import clock
 import os
+os.environ["QT_API"] = "pyqt"
 from collections import defaultdict
 from itertools import chain, compress
 
@@ -36,6 +37,7 @@ from scipy.optimize import minimize
 from scipy.linalg import rq
 from scipy.io import loadmat
 
+import mayavi.mlab as mlab
 #import h5py
 
 class Bunch(object):
@@ -770,56 +772,61 @@ def shBasis(alb, n):
     
     For a sphere, the Lambertian kernel has most of its energy in the first three bands of the spherical harmonic basis functions (above). This implies that Lambertian reflectance functions can be well-approximated by these low-order SH bases.
     """
+    def sph2cart(el, az):
+        return np.sin(el) * np.cos(az), np.sin(el) * np.sin(az), np.cos(el)
     
-    b = np.empty((alb.shape[0], alb.shape[1], 9))
-    b[:, :, 0] = np.pi * 1/np.sqrt(4*np.pi) * alb
-    b[:, :, 1] = 2*np.pi/3 * np.sqrt(3/(4*np.pi)) * n[:, 2] * alb
-    b[:, :, 2] = 2*np.pi/3 * np.sqrt(3/(4*np.pi)) * n[:, 0] * alb
-    b[:, :, 3] = 2*np.pi/3 * np.sqrt(3/(4*np.pi)) * n[:, 1] * alb
-    b[:, :, 4] = np.pi/4 * 1/2*np.sqrt(5/(4*np.pi)) * (3*np.square(n[:, 2]) - 1) * alb
-    b[:, :, 5] = np.pi/4 * 3*np.sqrt(5/(12*np.pi)) * n[:, 0] * n[:, 2] * alb
-    b[:, :, 6] = np.pi/4 * 3*np.sqrt(5/(12*np.pi)) * n[:, 1] * n[:, 2] * alb
-    b[:, :, 7] = np.pi/4 * 3/2*np.sqrt(5/(12*np.pi)) * (np.square(n[:, 0]) - np.square(n[:, 1])) * alb
-    b[:, :, 8] = np.pi/4 * 3*np.sqrt(5/(12*np.pi)) * n[:, 0] * n[:, 1] * alb
+    def sh9(x, y, z):
+        """
+        First nine spherical harmonics as functions of Cartesian coordinates
+        """
+        h = np.empty((9, x.size))
+        h[0, :] = 1/np.sqrt(4*np.pi) * np.ones(x.size)
+        h[1, :] = np.sqrt(3/(4*np.pi)) * z
+        h[2, :] = np.sqrt(3/(4*np.pi)) * x
+        h[3, :] = np.sqrt(3/(4*np.pi)) * y
+        h[4, :] = 1/2*np.sqrt(5/(4*np.pi)) * (3*np.square(z) - 1)
+        h[5, :] = 3*np.sqrt(5/(12*np.pi)) * x * z
+        h[6 ,:] = 3*np.sqrt(5/(12*np.pi)) * y * z
+        h[7, :] = 3/2*np.sqrt(5/(12*np.pi)) * (np.square(x) - np.square(y))
+        h[8, :] = 3*np.sqrt(5/(12*np.pi)) * x * y
+        
+        return h
     
-    return b
+    # Nine delta function locations (el, az) for point light sources to create positive lighting
+    lsph = np.array([[0, 0], [68, -90], [74, 108], [80, 52], [85, -42], [85, -137], [85, 146], [85, -4], [51, 67]]) * np.pi / 180
+#    lsph = np.array([[0, 0], [49, 17], [-68, 0], [73, -18], [77, 37], [-84, 47], [-84, -47], [82, -56], [-50, -84]]) * np.pi / 180
+    
+    # Transform to Cartesian coordinates
+    lx, ly, lz = sph2cart(lsph[:, 0], lsph[:, 1])
+    
+    # Evaluate spherical harmonics at these point light source locations
+    H = sh9(lx, ly, lz)
+    
+    # Evaluate spherical harmonics at face shape normals
+    B = sh9(n[:, 0], n[:, 1], n[:, 2])
+    
+    norm = np.r_[np.pi, np.repeat(2*np.pi/3, 3), np.repeat(np.pi/4, 5)]
+    
+    I = np.empty((alb.shape[0], 9, alb.shape[1]))
+    for c in range(alb.shape[0]):
+        I[c, :, :] = np.dot(H.T, norm[:, np.newaxis] * B * alb[c, :])
+    
+#    b = np.empty((alb.shape[0], alb.shape[1], 9))
+#    b[:, :, 0] = np.pi * 1/np.sqrt(4*np.pi) * alb
+#    b[:, :, 1] = 2*np.pi/3 * np.sqrt(3/(4*np.pi)) * n[:, 2] * alb
+#    b[:, :, 2] = 2*np.pi/3 * np.sqrt(3/(4*np.pi)) * n[:, 0] * alb
+#    b[:, :, 3] = 2*np.pi/3 * np.sqrt(3/(4*np.pi)) * n[:, 1] * alb
+#    b[:, :, 4] = np.pi/4 * 1/2*np.sqrt(5/(4*np.pi)) * (3*np.square(n[:, 2]) - 1) * alb
+#    b[:, :, 5] = np.pi/4 * 3*np.sqrt(5/(12*np.pi)) * n[:, 0] * n[:, 2] * alb
+#    b[:, :, 6] = np.pi/4 * 3*np.sqrt(5/(12*np.pi)) * n[:, 1] * n[:, 2] * alb
+#    b[:, :, 7] = np.pi/4 * 3/2*np.sqrt(5/(12*np.pi)) * (np.square(n[:, 0]) - np.square(n[:, 1])) * alb
+#    b[:, :, 8] = np.pi/4 * 3*np.sqrt(5/(12*np.pi)) * n[:, 0] * n[:, 1] * alb
+    
+    return I
 
 dirName = '/home/nguyen/Documents/Data/facewarehouse/FaceWarehouse_Data_0/'
-#saveDirName = '/home/nguyen/Documents/Data/facewarehouse/Models/'
-        
-#vt, f = importObj(dirName, shape = 0, dataToImport = ['vt', 'f'])
-#plt.scatter(vt[:, 0], vt[:, 1], s = 1)
 
-# Use a template mask to extract the facial region from the 3D models
-#saveMasks(dirName, saveDirName = './masks2v2/', mask = 'mask2v2.obj', poses = 20)
-
-# Subdivision
-#v, f = importObj('./masks2v2/', shape = 0, dataToImport = ['v', 'f'])
-#f = f[0, :, :] - 1
-#vNew, fNew = subdivide(v, f)
-
-## Load identity (neutral face) eigenmodel
-#idEvec = np.load('./models/idEvec.npy')
-#idEval = np.load('./models/idEval.npy')
-#idMean = np.load('./models/idMean.npy')
-##idEvec = np.reshape(idEvec, (idMean.size//3, 3, 80))
-#idEvec = np.reshape(idEvec, (3, idEvec.shape[0]//3, 80), order = 'F')
-##idMean = np.reshape(idMean, (idMean.size//3, 3))
-#idMean = np.reshape(idMean, (3, idMean.size//3), order = 'F')
-#
-## Load expression eigenmodel
-#expEvec = np.load('./models/expEvec.npy')
-#expEval = np.load('./models/expEval.npy')
-#expEvec = np.reshape(expEvec, (3, expEvec.shape[0]//3, 76), order = 'F')
-#m.idMean = idMean
-#m.idEval = idEval
-#m.idEvec = idEvec
-#m.expMean = expMean
-#m.expEval = expEval
-#m.expEvec = expEvec
-#m.numVertices = idMean.shape[1]
-
-#processBFM2017('/home/nguyen/Documents/Data/model2017-1_face12_nomouth.h5', '/home/nguyen/Documents/Data/bfm2017landmarks.txt')
+#n = Bunch(np.load('./models/fw.npz'))
 m = Bunch(np.load('./models/bfm2017.npz'))
 m.idEvec = m.idEvec[:, :, :80]
 m.idEval = m.idEval[:80]
@@ -827,8 +834,6 @@ m.expEvec = m.expEvec[:, :, :76]
 m.expEval = m.expEval[:76]
 m.texEvec = m.texEvec[:, :, :80]
 m.texEval = m.texEval[:80]
-
-
 
 bfm2fw = np.array([0, 2, 3, 4, 5, 6, 7, 8, 13, 14, 16, 17, 18, 21, 22, 23, 24, 29, 30, 32, 33, 34, 37, 38, 39])
 fw2bfm = np.array([7, 59, 55, 62, 49, 39, 65, 34, 33, 31, 32, 52, 50, 45, 41, 40, 30, 29, 27, 28, 46, 48, 44, 37, 38])
@@ -840,20 +845,15 @@ expCoef[0] = 1
 texCoef = np.zeros(m.texEval.shape)
 texCoef[0] = 1
 
-vNorm = calcNormals(np.zeros(3), m, idCoef, expCoef)
-b = shBasis(m.texMean, vNorm)
-
-b = (b + 1) / 2
-
-for i in range(9):
-    exportObj(m.idMean.T, c = b[:, :, i].T, f = m.face, fNameOut = 'sh' + str(i+1))
-
 ## Load 3D vertex indices of landmarks and find their vertices on the neutral face
 #landmarkInds3D = np.load('./data/landmarkInds3D.npy')
 landmarkInds3D = np.r_[m.landmarkInd[bfm2fw], 16225, 16246, 16276, 22467, 22437, 22416]
 
+#fwlm = landmarkInds3D[np.r_[1, 3, 5, np.arange(7, 16)]]
+#bfmlm = landmarkInds3D[[25, 0, 30, 18, 17, 9, 8, 20, 4, 11, 2, 6]]
+
 pose = 11
-tester = 8
+tester = 0
 
 # Gather 2D landmarks that correspond to manually chosen 3D landmarks
 #landmarkInds2D = np.array([0, 1, 4, 7, 10, 13, 14, 27, 29, 31, 33, 46, 49, 52, 55, 65])
@@ -862,7 +862,7 @@ landmarks = np.load('./data/landmarks2D.npy')[pose, tester, landmarkInds2D, :]
 landmarkPixelInd = (landmarks * np.array([639, 479])).astype(int)
 landmarkPixelInd[:, 1] = 479 - landmarkPixelInd[:, 1]
 
-### Get target 3D coordinates of depth maps at the 16 landmark locations
+## Get target 3D coordinates of depth maps at the 16 landmark locations
 #depth = np.load('./data/depthMaps.npy')[pose, tester, :, :]
 #
 #targetLandmark, nonZeroDepth = perspectiveTransformKinect(np.c_[landmarkPixelInd[:, 0], landmarkPixelInd[:, 1], depth[landmarkPixelInd[:, 1], landmarkPixelInd[:, 0]]])
@@ -977,64 +977,79 @@ def camWithShape(param, x, m, lm2d, lm3d):
     
     return Elan + Ereg
 
-#param = minimize(camWithShape, np.r_[P.flatten(), idCoef, expCoef], args = (x, m, landmarkPixelInd, landmarkInds3D))
-#
-## Separate variates in parameter vector
-#P = param.x[:12].reshape((3, 4))
-#idCoef = param.x[12: 12 + m.idEval.size]
-#expCoef = param.x[12 + m.idEval.size:]
-#
-## Get inner parameters from projection matrix via RQ decomposition
-#K, R = rq(P[:, :3])
-#angles = rotMat2angle(R)
-#t = np.linalg.inv(K).dot(P[:, -1])
-#
-## Project 3D model into 2D plane
-#shape = m.idMean + np.tensordot(m.idEvec, idCoef, axes = 1) + np.tensordot(m.expEvec, expCoef, axes = 1)
-#fitting = K.dot(R.dot(shape) + t[:, np.newaxis])
+param = minimize(camWithShape, np.r_[P.flatten(), idCoef, expCoef], args = (x, m, landmarkPixelInd, landmarkInds3D))
+
+# Separate variates in parameter vector
+P = param.x[:12].reshape((3, 4))
+idCoef = param.x[12: 12 + m.idEval.size]
+expCoef = param.x[12 + m.idEval.size:]
+
+# Get inner parameters from projection matrix via RQ decomposition
+K, R = rq(P[:, :3])
+angles = rotMat2angle(R)
+t = np.linalg.inv(K).dot(P[:, -1])
+
+# Project 3D model into 2D plane
+shape = m.idMean + np.tensordot(m.idEvec, idCoef, axes = 1) + np.tensordot(m.expEvec, expCoef, axes = 1)
+modelBeforeProj = R.dot(shape) + t[:, np.newaxis]
+fitting = K.dot(modelBeforeProj)
 
 # Plot the projected 3D model on top of the input RGB image
-#fName = dirName + 'Tester_' + str(tester+1) + '/TrainingPose/pose_' + str(pose) + '.png'
-#img = mpimg.imread(fName)
-#plt.imshow(img)
-#plt.hold(True)
-#plt.scatter(fitting[0, :], fitting[1, :], s = 0.1, c = 'g')
-#plt.hold(True)
-#plt.scatter(fitting[0, landmarkInds3D], fitting[1, landmarkInds3D], s = 3, c = 'b')
-#plt.hold(True)
-#plt.scatter(landmarkPixelInd[:, 0], landmarkPixelInd[:, 1], s = 2, c = 'r')
+fName = 'data/TrainingPose/pose_' + str(pose) + '.png'
+img = mpimg.imread(fName)
+plt.imshow(img)
+plt.hold(True)
+plt.scatter(fitting[0, :], fitting[1, :], s = 0.1, c = 'g')
+plt.hold(True)
+plt.scatter(fitting[0, landmarkInds3D], fitting[1, landmarkInds3D], s = 3, c = 'b')
+plt.hold(True)
+plt.scatter(landmarkPixelInd[:, 0], landmarkPixelInd[:, 1], s = 2, c = 'r')
 
-#vertex2pixel = fitting[:2, :].T.astype(int)
-#pixelInd, ind, counts = np.unique(vertex2pixel, return_index = True, return_counts = True, axis = 0)
-#zBuffer = np.empty(ind.size, dtype = int)
-#for i in range(ind.size):
-#    if counts[i] == 1:
-#        zBuffer[i] = ind[i]
-#    else:
-#        inds = np.where((vertex2pixel[:, 0] == pixelInd[i, 0]) & (vertex2pixel[:, 1] == pixelInd[i, 1]))[0]
-#        zBuffer[i] = inds[np.argmin(fitting[2, inds])]
+# Z-buffer: smaller z is closer to image plane (e.g. the nose should have relatively small z values)
+vertex2pixel = fitting[:2, :].T.astype(int)
+pixelInd, ind, counts = np.unique(vertex2pixel, return_index = True, return_counts = True, axis = 0)
+zBuffer = np.empty(ind.size, dtype = int)
+for i in range(ind.size):
+    if counts[i] == 1:
+        zBuffer[i] = ind[i]
+    else:
+        inds = np.where((vertex2pixel[:, 0] == pixelInd[i, 0]) & (vertex2pixel[:, 1] == pixelInd[i, 1]))[0]
+        zBuffer[i] = inds[np.argmin(modelBeforeProj[2, inds])]
 
 #mask = np.zeros(img.shape[:2], dtype = bool)
 #mask.flat[np.ravel_multi_index(vertex2pixel[zBuffer, ::-1].T, img.shape[:2])] = True
 #plt.figure()
 #plt.imshow(mask)
-
-#exportObj(shape[:, zBuffer].T, c = texture[:, zBuffer].T, fNameOut = 'maskTest')
 """
 """
-def textureFitter(texCoef, x, mask, m):
+def textureCost(texCoef, x, mask, m):
     """
     Energy formulation for fitting texture
     """
     # Photo-consistency
-    Xcol = m.texMean[:, mask] + np.tensordot(m.texEvec[:, mask, :], texCoef, axes = 1)
+    Xcol = (m.texMean[:, mask] + np.tensordot(m.texEvec[:, mask, :], texCoef, axes = 1)).T
     
-    Ecol = np.linalg.norm(x - Xcol.T, axis = 1).sum() / ind.size
+    r = (Xcol - x).flatten()
+    
+    Ecol = np.dot(r, r) / mask.size
     
     # Statistical regularization
     Ereg = np.sum(texCoef ** 2 / m.texEval)
     
-    return 10*Ecol + Ereg
+    return Ecol + Ereg
+
+def textureGrad(texCoef, x, mask, m):
+    """
+    Jacobian for texture energy
+    """
+    Xcol = (m.texMean[:, mask] + np.tensordot(m.texEvec[:, mask, :], texCoef, axes = 1)).T
+    
+    r = (Xcol - x).flatten()
+    
+    # Jacobian
+    J = m.texEvec[:, mask, :].reshape((m.texMean[:, mask].size, m.texEval.size), order = 'F')
+    
+    return 2 * (np.dot(J.T, r) / mask.size + texCoef / m.texEval)
 
 def fitter(param, x, vis, m, lm2d, lm3d):
     """
@@ -1072,12 +1087,14 @@ def fitter(param, x, vis, m, lm2d, lm3d):
     
     return Ecol + 10*Elan + Ereg
 
-#x = np.reshape(img, (np.prod(img.shape[:2]), 3))
-#x = x[np.ravel_multi_index(vertex2pixel[zBuffer, ::-1].T, img.shape[:2]), :]
-#param2 = minimize(textureFitter, texCoef, args = (x, zBuffer, m))
+x = np.reshape(img, (np.prod(img.shape[:2]), 3))
+x = x[np.ravel_multi_index(vertex2pixel[zBuffer, ::-1].T, img.shape[:2]), :]
+param2 = minimize(textureCost, texCoef, args = (x, zBuffer, m), method = 'cg', jac = textureGrad)
+from scipy.optimize import check_grad
+check_grad(textureCost, textureGrad, texCoef, x, zBuffer, m)
 #param2 = minimize(fitter, np.r_[K[:2, :].flatten(), angles, t, idCoef, expCoef, texCoef], args = (x, m, landmarkPixelInd, landmarkInds3D))
 
-#texCoef = param2.x
+texCoef = param2['x']
 #K2 = np.reshape(param2.x[:6], (2, 3))
 #angles2 = param2.x[6: 9]
 #R2 = rotMat2angle(angles2)
@@ -1088,8 +1105,11 @@ def fitter(param, x, vis, m, lm2d, lm3d):
 
 # Project 3D model into 2D plane
 #fitting = K2.dot(R2.dot(m.idMean + np.tensordot(m.idEvec, idCoef2, axes = 1) + np.tensordot(m.expEvec, expCoef2, axes = 1)) + t2[:, np.newaxis])
-#texture = m.texMean + np.tensordot(m.texEvec, texCoef, axes = 1)
+texture = m.texMean + np.tensordot(m.texEvec, texCoef, axes = 1)
 #exportObj(shape.T, c = texture.T, f = m.face, fNameOut = 'texTest')
+tmesh = mlab.triangular_mesh(shape[0, :], shape[1, :], shape[2, :], m.face, scalars = np.arange(m.numVertices))
+tmesh.module_manager.scalar_lut_manager.lut.table = np.c_[(texture.T * 255), 255 * np.ones(m.numVertices)].astype(np.uint8)
+mlab.draw()
 
 #reconstImg = np.zeros(img.shape)
 #reconstImg[:, :, 0].flat[np.ravel_multi_index(vertex2pixel[zBuffer, ::-1].T, img.shape[:2])] = texture[0, zBuffer]

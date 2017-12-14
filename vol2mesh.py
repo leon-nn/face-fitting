@@ -9,14 +9,15 @@ Created on Fri Nov 17 15:52:46 2017
 from time import clock
 import glob, os, re, json
 import numpy as np
-#from scipy.interpolate import interpn
+from scipy.interpolate import interpn
 #from scipy.optimize import minimize
-#from scipy.optimize import check_grad
-#from sklearn.neighbors import NearestNeighbors
+from scipy.optimize import check_grad
+from sklearn.neighbors import NearestNeighbors
 import matplotlib.pyplot as plt
 import matplotlib.image as mpimg
+from mayavi import mlab
 #import visvis as vv
-#from pylab import savefig
+from pylab import savefig
 
 class Bunch(object):
   def __init__(self, adict):
@@ -309,14 +310,21 @@ def shapeGrad(P, m, target, targetLandmarks, sourceLandmarkInds, NN):
     Jlan = np.c_[drV_dalpha[:, sourceLandmarkInds, :].reshape((targetLandmarks.size, idCoef.size), order = 'F'), drV_ddelta[:, sourceLandmarkInds, :].reshape((targetLandmarks.size, expCoef.size), order = 'F'), drV_dpsi[:, sourceLandmarkInds].flatten('F'), drV_dtheta[:, sourceLandmarkInds].flatten('F'), drV_dphi[:, sourceLandmarkInds].flatten('F'), drV_dt[:sourceLandmarkInds.size * 3, :], drV_ds[:, sourceLandmarkInds].flatten('F')]
     
     return 2 * (np.dot(Jver.T, rver) / m.numVertices + np.dot(Jlan.T, rlan) / sourceLandmarkInds.size + np.r_[idCoef / m.idEval, expCoef / m.expEval, np.zeros(7)])
+    
+#    drR_dalpha = np.diag(2*idCoef / m.idEval)
+#    drR_ddelta = np.diag(2*expCoef / m.expEval)
+#            
+#    J = np.r_[2 * np.c_[drV_dalpha.reshape((source.size, idCoef.size), order = 'F'), drV_ddelta.reshape((source.size, expCoef.size), order = 'F'), drV_dpsi.flatten('F'), drV_dtheta.flatten('F'), drV_dphi.flatten('F'), drV_dt, drV_ds.flatten('F')] / m.numVertices, 2 * np.c_[drV_dalpha[:, sourceLandmarkInds, :].reshape((targetLandmarks.size, idCoef.size), order = 'F'), drV_ddelta[:, sourceLandmarkInds, :].reshape((targetLandmarks.size, expCoef.size), order = 'F'), drV_dpsi[:, sourceLandmarkInds].flatten('F'), drV_dtheta[:, sourceLandmarkInds].flatten('F'), drV_dphi[:, sourceLandmarkInds].flatten('F'), drV_dt[:sourceLandmarkInds.size * 3, :], drV_ds[:, sourceLandmarkInds].flatten('F')] / sourceLandmarkInds.size, np.c_[drR_dalpha, np.zeros((idCoef.size, expCoef.size + 7))], np.c_[np.zeros((expCoef.size, idCoef.size)), drR_ddelta, np.zeros((expCoef.size, 7))]]
+#    
+#    return J.T.dot(np.r_[rver, rlan, idCoef ** 2 / m.idEval, expCoef ** 2 / m.expEval])
 
 def gaussNewton(P, m, target, targetLandmarks, sourceLandmarkInds, NN, jacobi = True, calcId = True):
     """
     Energy function to be minimized for fitting.
     """
     # Shape eigenvector coefficients
-    alpha = P[: m.idEval.size]
-    delta = P[m.idEval.size: m.idEval.size + m.expEval.size]
+    idCoef = P[: m.idEval.size]
+    expCoef = P[m.idEval.size: m.idEval.size + m.expEval.size]
     
     # Rotation Euler angles, translation vector, scaling factor
     angles = P[m.idEval.size + m.expEval.size:][:3]
@@ -329,7 +337,7 @@ def gaussNewton(P, m, target, targetLandmarks, sourceLandmarkInds, NN, jacobi = 
         targetLandmarks = targetLandmarks.T
     
     # The eigenmodel, before rigid transformation and scaling
-    model = m.idMean + np.tensordot(m.idEvec, alpha, axes = 1) + np.tensordot(m.expEvec, delta, axes = 1)
+    model = m.idMean + np.tensordot(m.idEvec, idCoef, axes = 1) + np.tensordot(m.expEvec, expCoef, axes = 1)
     
     # After rigid transformation and scaling
     source = s*np.dot(R, model) + t[:, np.newaxis]
@@ -343,8 +351,8 @@ def gaussNewton(P, m, target, targetLandmarks, sourceLandmarkInds, NN, jacobi = 
     # Calculate resisduals
     rVert = targetNN - source
     rLand = targetLandmarks - source[:, sourceLandmarkInds]
-    rAlpha = alpha ** 2 / m.idEval
-    rDelta = delta ** 2 / m.expEval
+    rAlpha = idCoef ** 2 / m.idEval
+    rDelta = expCoef ** 2 / m.expEval
     
     # Calculate costs
     Ever = np.linalg.norm(rVert, axis = 0).sum() / m.numVertices
@@ -354,31 +362,23 @@ def gaussNewton(P, m, target, targetLandmarks, sourceLandmarkInds, NN, jacobi = 
     if jacobi:
 #        start = clock()
         
+        drV_dalpha = -s*np.tensordot(R, m.idEvec, axes = 1)
+        drV_ddelta = -s*np.tensordot(R, m.expEvec, axes = 1)
+        drV_dpsi = -s*np.dot(dR_dpsi(angles), model)
+        drV_dtheta = -s*np.dot(dR_dtheta(angles), model)
+        drV_dphi = -s*np.dot(dR_dphi(angles), model)
+        drV_dt = -np.tile(np.eye(3), [source.shape[1], 1])
+        drV_ds = -np.dot(R, model)
+        
+        drR_dalpha = np.diag(2*idCoef / m.idEval)
+        drR_ddelta = np.diag(2*expCoef / m.expEval)
+        
         # Calculate Jacobian
         if calcId:
             
             r = np.r_[rVert.flatten('F'), rLand.flatten('F'), rAlpha, rDelta]
         
-            drV_dalpha = -s*np.tensordot(R, m.idEvec, axes = 1)
-            drV_ddelta = -s*np.tensordot(R, m.expEvec, axes = 1)
-            drV_dpsi = -s*np.dot(dR_dpsi(angles), model)
-            drV_dtheta = -s*np.dot(dR_dtheta(angles), model)
-            drV_dphi = -s*np.dot(dR_dphi(angles), model)
-            drV_dt = -np.tile(np.eye(3), [source.shape[1], 1])
-            drV_ds = -np.dot(R, model)
-            
-            drL_dalpha = drV_dalpha[:, sourceLandmarkInds, :]
-            drL_ddelta = drV_ddelta[:, sourceLandmarkInds, :]
-            drL_dpsi = drV_dpsi[:, sourceLandmarkInds]
-            drL_dtheta = drV_dtheta[:, sourceLandmarkInds]
-            drL_dphi = drV_dphi[:, sourceLandmarkInds]
-            drL_dt = -np.tile(np.eye(3), [sourceLandmarkInds.size, 1])
-            drL_ds = drV_ds[:, sourceLandmarkInds]
-            
-            drR_dalpha = np.diag(2*alpha / m.idEval)
-            drR_ddelta = np.diag(2*delta / m.expEval)
-            
-            J = np.r_[np.c_[drV_dalpha.reshape((np.prod(source.shape), alpha.size), order = 'F'), drV_ddelta.reshape((np.prod(source.shape), delta.size), order = 'F'), drV_dpsi.flatten('F'), drV_dtheta.flatten('F'), drV_dphi.flatten('F'), drV_dt, drV_ds.flatten('F')], np.c_[drL_dalpha.reshape((np.prod(targetLandmarks.shape), alpha.size), order = 'F'), drL_ddelta.reshape((np.prod(targetLandmarks.shape), delta.size), order = 'F'), drL_dpsi.flatten('F'), drL_dtheta.flatten('F'), drL_dphi.flatten('F'), drL_dt, drL_ds.flatten('F')], np.c_[drR_dalpha, np.zeros((alpha.size, delta.size + 7))], np.c_[np.zeros((delta.size, alpha.size)), drR_ddelta, np.zeros((delta.size, 7))]]
+            J = np.r_[np.c_[drV_dalpha.reshape((source.size, idCoef.size), order = 'F'), drV_ddelta.reshape((source.size, expCoef.size), order = 'F'), drV_dpsi.flatten('F'), drV_dtheta.flatten('F'), drV_dphi.flatten('F'), drV_dt, drV_ds.flatten('F')], np.c_[drV_dalpha[:, sourceLandmarkInds, :].reshape((targetLandmarks.size, idCoef.size), order = 'F'), drV_ddelta[:, sourceLandmarkInds, :].reshape((targetLandmarks.size, expCoef.size), order = 'F'), drV_dpsi[:, sourceLandmarkInds].flatten('F'), drV_dtheta[:, sourceLandmarkInds].flatten('F'), drV_dphi[:, sourceLandmarkInds].flatten('F'), drV_dt[:sourceLandmarkInds.size * 3, :], drV_ds[:, sourceLandmarkInds].flatten('F')], np.c_[drR_dalpha, np.zeros((idCoef.size, expCoef.size + 7))], np.c_[np.zeros((expCoef.size, idCoef.size)), drR_ddelta, np.zeros((expCoef.size, 7))]]
             
             # Parameter update (Gauss-Newton)
             dP = -np.linalg.inv(np.dot(J.T, J)).dot(J.T).dot(r)
@@ -387,23 +387,7 @@ def gaussNewton(P, m, target, targetLandmarks, sourceLandmarkInds, NN, jacobi = 
             
             r = np.r_[rVert.flatten('F'), rLand.flatten('F'), rDelta]
             
-            drV_ddelta = -s*np.tensordot(R, m.expEvec, axes = 1)
-            drV_dpsi = -s*np.dot(dR_dpsi(angles), model)
-            drV_dtheta = -s*np.dot(dR_dtheta(angles), model)
-            drV_dphi = -s*np.dot(dR_dphi(angles), model)
-            drV_dt = -np.tile(np.eye(3), [source.shape[1], 1])
-            drV_ds = -np.dot(R, model)
-            
-            drL_ddelta = drV_ddelta[:, sourceLandmarkInds, :]
-            drL_dpsi = drV_dpsi[:, sourceLandmarkInds]
-            drL_dtheta = drV_dtheta[:, sourceLandmarkInds]
-            drL_dphi = drV_dphi[:, sourceLandmarkInds]
-            drL_dt = -np.tile(np.eye(3), [sourceLandmarkInds.size, 1])
-            drL_ds = drV_ds[:, sourceLandmarkInds]
-            
-            drR_ddelta = np.diag(2*delta / m.expEval)
-            
-            J = np.r_[np.c_[drV_ddelta.reshape((np.prod(source.shape), delta.size), order = 'F'), drV_dpsi.flatten('F'), drV_dtheta.flatten('F'), drV_dphi.flatten('F'), drV_dt, drV_ds.flatten('F')], np.c_[drL_ddelta.reshape((np.prod(targetLandmarks.shape), delta.size), order = 'F'), drL_dpsi.flatten('F'), drL_dtheta.flatten('F'), drL_dphi.flatten('F'), drL_dt, drL_ds.flatten('F')], np.c_[drR_ddelta, np.zeros((delta.size, 7))]]
+            J = np.r_[np.c_[drV_ddelta.reshape((source.size, expCoef.size), order = 'F'), drV_dpsi.flatten('F'), drV_dtheta.flatten('F'), drV_dphi.flatten('F'), drV_dt, drV_ds.flatten('F')], np.c_[drV_ddelta[:, sourceLandmarkInds, :].reshape((np.prod(targetLandmarks.shape), expCoef.size), order = 'F'), drV_dpsi[:, sourceLandmarkInds].flatten('F'), drV_dtheta[:, sourceLandmarkInds].flatten('F'), drV_dphi[:, sourceLandmarkInds].flatten('F'), drV_dt[:sourceLandmarkInds.size * 3, :], drV_ds[:, sourceLandmarkInds].flatten('F')], np.c_[drR_ddelta, np.zeros((expCoef.size, 7))]]
             
             # Parameter update (Gauss-Newton)
             dP = np.r_[np.zeros(m.idEval.size), -np.linalg.inv(np.dot(J.T, J)).dot(J.T).dot(r)]
@@ -416,8 +400,11 @@ def gaussNewton(P, m, target, targetLandmarks, sourceLandmarkInds, NN, jacobi = 
 
 if __name__ == "__main__":
     
+    os.chdir('/home/leon/f2f-fitting/trump2/volume/')
+    numFrames = 3744 #2260 #2882
+    
     # Load 3DMM
-    m = Bunch(np.load('./models/bfm2017.npz'))
+    m = Bunch(np.load('../../models/bfm2017.npz'))
     m.idEvec = m.idEvec[:, :, :80]
     m.idEval = m.idEval[:80]
     m.expEvec = m.expEvec[:, :, :76]
@@ -427,7 +414,6 @@ if __name__ == "__main__":
     
     targetLandmarkInds = np.array([0, 1, 2, 3, 8, 13, 14, 15, 16, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 61, 62, 63, 65, 66, 67, 68, 69])
     sourceLandmarkInds = np.array([16203, 16235, 16260, 16290, 27061, 22481, 22451, 22426, 22394, 8134, 8143, 8151, 8156, 6986, 7695, 8167, 8639, 9346, 2345, 4146, 5180, 6214, 4932, 4158, 10009, 11032, 12061, 13872, 12073, 11299, 5264, 6280, 7472, 8180, 8888, 10075, 11115, 9260, 8553, 8199, 7845, 7136, 7600, 8190, 8780, 8545, 8191, 7837, 4538, 11679])
-    
     
     #initRegInds = np.array([0, 1, 2, 4, 6, 7, 8, 12, 18, 21, 24, 27, 30, 33, 36, 39])
     
@@ -496,176 +482,227 @@ if __name__ == "__main__":
     #    np.save('../landmarks_scaled/' + fName, lmScaled)
     #    np.save('../depth/' + fName, target)
     
-    #plt.ioff()
-#    numFrames = 1 #2882
-#    param = np.zeros((numFrames, m.idEval.size + m.expEval.size + 7))
-#    TS2orig = np.zeros((numFrames, 4))
-#    
-#    for frame in np.arange(1, numFrames + 1):
-#        print(frame)
-#    #    fName = '{:0>5}'.format(frame * 10)
-#        fName = '{:0>5}'.format(frame)
-#        fNameImgScaled = 'obama/scaled/' + fName + '.png'
-#        fNameImgOrig = '/home/leon/data/obama/obama_source2_fps24-png/' + fName + '.png'
-#        fNameVol = 'obama/volume/' + fName + '.raw'
+#    plt.ioff()
+    param = np.zeros((numFrames, m.idEval.size + m.expEval.size + 7))
+    TS2orig = np.zeros((numFrames, 4))
+    
+#    for frame, file in enumerate(glob.glob('*.raw')):
+#        fName = os.path.splitext(file)[0]
+#        print(fName)
+#        frame -= 1
+#        fNameImgOrig = '../orig/' + fName + '.png'
+#        fNameVol = '../volume/' + fName + '.raw'
+#        fNameLandmarks = '../landmark/' + fName + '.json'
+    for frame in np.arange(1, numFrames + 1):
+        print(frame)
+    #    fName = '{:0>5}'.format(frame * 10)
+        fName = '{:0>5}'.format(frame)
+        fNameImgScaled = '../scaled/' + fName + '.png'
+        fNameImgOrig = '../orig/' + fName + '.png'
+        fNameVol = '../volume/' + fName + '.raw'
 #        fNameLandmarks = 'obama/landmark/' + fName + '.txt'
-##        fNameLandmarks = '/home/leon/data/obama/json_landmark/' + fName + '.json'
-#        
-#        '''
-#        Preprocess landmark locations: map to cropped/scaled version of image
-#        '''
-#        
-#        # Read the landmarks generated by VRN and the original JSON landmarks
-#        if fNameLandmarks.endswith('.txt'):
-#            with open(fNameLandmarks, 'r') as fd:
-#                lm = []
-#                for l in fd:
-#                    lm.append([int(coord) for coord in l.split(',')])
-#            lm = np.array(lm)
-#        elif fNameLandmarks.endswith('.json'):
-#            with open(fNameLandmarks, 'r') as fd:
-#                lm = json.load(fd)
-#            lm = np.array([l[0] for l in lm], dtype = int).squeeze()[:, :3]
-#            lmConf = lm[:, -1]
-#            lm = lm[:, :2]
-#        
-#        # Map the landmarks from the original image to the scaled and cropped image
-#        imgOrig = mpimg.imread(fNameImgOrig)
-##        plt.figure()
-##        plt.imshow(imgOrig)
-##        plt.scatter(lm[:, 0], lm[:, 1], s = 2)
-##        plt.title(fName)
-##        plt.close()
-#        
-#        lmRange = np.ptp(lm, axis = 0)
-#        scale = 90 / np.sqrt(lmRange.prod())
-#        cropCorner = (np.min(lm, axis = 0) - lmRange / 2) * scale
-#        
-#        scaledImgDim = np.array(imgOrig.shape[1::-1]) * scale
-#        
-#        # Case 1: The cropped picture is contained within the scaled image
-#        if (cropCorner >= 0).all() and ((192 + cropCorner) < scaledImgDim).all():
-#            lmScaled = lm * scale - cropCorner
-#        
-#        # Case 2: The crop corner is outside of the scaled image, but the extent of the cropped picture is within the bounds of the scaled image
-#        elif (cropCorner < 0).any() and ((192 + cropCorner) < scaledImgDim).all():
-#            lmScaled = lm * scale - cropCorner * (cropCorner > 0) - cropCorner * (cropCorner < 0) / 2
-#        
-#        # Case 3: The crop corner is outside of the scaled image, and the extent of the cropped picture is beyond the bounds of the scaled image
-#        elif (cropCorner < 0).any() and ((192 + cropCorner) > scaledImgDim).any():
-#            lmScaled = lm * scale - cropCorner * (cropCorner > 0) + (192 - (scaledImgDim - cropCorner * (cropCorner > 0))) / 2
-#        
-#    #    # Plot scaled landmarks
-##        imgScaled = mpimg.imread(fNameImgScaled)
-##        fig, ax = plt.subplots()
-##        plt.imshow(imgScaled)
-##        plt.hold(True)
-##        x = lmScaled[:, 0]
-##        y = lmScaled[:, 1]
-##        ax.scatter(x, y, s = 2, c = 'b', picker = True)
-##        fig.canvas.mpl_connect('pick_event', onpick3)
-#    #    
-#    #    plt.figure()
-#    #    plt.imshow(imgScaled)
-#    #    plt.scatter(lmScaled[:, 0], lmScaled[:, 1], s = 2)
-#    #    plt.title(fName)
-#    #    savefig('lm/lm' + fName + '.png', bbox_inches='tight')
-#    #    plt.close('all')
-#        
-#        '''
-#        Initial registration
-#        '''
-#        
-#        # Import volume and rescale the z-axis by 1/2
-#        vol = np.fromfile(fNameVol, dtype = np.int8)
-#        vol = vol.reshape((200, 192, 192))
-#        
-#        # Interpolate the max volume values at the landmarks
-#        depth = np.argmax(vol[::-1, :, :] > 0, axis = 0) / 2
-#        lmScaled = lmScaled[targetLandmarkInds, :]
-#        targetLandmarks = np.c_[lmScaled, interpn((np.arange(0, 192), np.arange(0, 192)), depth, lmScaled[:, ::-1], method = 'nearest')]
-#        nzd = targetLandmarks[:, 2] != 0
-#        targetLandmarks = targetLandmarks[nzd, :]
-#    
-#        # Initialize shape coefficients
-#        if frame == 1:
-#            # Find initial guess of the rigid transformation (rotation, translation, scale) based off of the mean face of the 3DMM
-#            rho = initialRegistration(m.idMean[:, sourceLandmarkInds[nzd]], targetLandmarks)
-#        
-#            P = np.r_[np.zeros(m.idEval.size + m.expEval.size), rho]
-#    
-#             Further refine this initial guess while retrieving an initial guess of the shape parameters
+        fNameLandmarks = '../landmark/' + fName + '.json'
+        
+        '''
+        Preprocess landmark locations: map to cropped/scaled version of image
+        '''
+        
+        # Read the landmarks generated by VRN and the original JSON landmarks
+        if fNameLandmarks.endswith('.txt'):
+            with open(fNameLandmarks, 'r') as fd:
+                lm = []
+                for l in fd:
+                    lm.append([int(coord) for coord in l.split(',')])
+            lm = np.array(lm)
+        elif fNameLandmarks.endswith('.json'):
+            with open(fNameLandmarks, 'r') as fd:
+                lm = json.load(fd)
+            lm = np.array([l[0] for l in lm], dtype = int).squeeze()[:, :3]
+            lmConf = lm[:, -1]
+            lm = lm[:, :2]
+        
+        # Map the landmarks from the original image to the scaled and cropped image
+        imgOrig = mpimg.imread(fNameImgOrig)
+#        plt.figure()
+#        plt.imshow(imgOrig)
+#        plt.scatter(lm[:, 0], lm[:, 1], s = 2)
+#        plt.title(fName)
+#        plt.close()
+        
+        lmRange = np.ptp(lm, axis = 0)
+        scale = 90 / np.sqrt(lmRange.prod())
+        cropCorner = (np.min(lm, axis = 0) - lmRange / 2) * scale
+        
+        scaledImgDim = np.array(imgOrig.shape[1::-1]) * scale
+        
+        # Case 1: The cropped picture is contained within the scaled image
+        if (cropCorner >= 0).all() and ((192 + cropCorner) < scaledImgDim).all():
+            lmScaled = lm * scale - cropCorner
+        
+        # Case 2: The crop corner is outside of the scaled image, but the extent of the cropped picture is within the bounds of the scaled image
+        elif (cropCorner < 0).any() and ((192 + cropCorner) < scaledImgDim).all():
+            lmScaled = lm * scale - cropCorner * (cropCorner > 0) - cropCorner * (cropCorner < 0) / 2
+        
+        # Case 3: The crop corner is outside of the scaled image, and the extent of the cropped picture is beyond the bounds of the scaled image
+        elif (cropCorner < 0).any() and ((192 + cropCorner) > scaledImgDim).any():
+            lmScaled = lm * scale - cropCorner * (cropCorner > 0) + (192 - (scaledImgDim - cropCorner * (cropCorner > 0))) / 2
+        
+        # Plot scaled landmarks
+#        imgScaled = mpimg.imread(fNameImgScaled)
+#        fig, ax = plt.subplots()
+#        plt.imshow(imgScaled)
+#        plt.hold(True)
+#        x = lmScaled[:, 0]
+#        y = lmScaled[:, 1]
+#        ax.scatter(x, y, s = 2, c = 'b', picker = True)
+#        fig.canvas.mpl_connect('pick_event', onpick3)
+        
+#        plt.figure()
+#        plt.imshow(imgScaled)
+#        plt.scatter(lmScaled[:, 0], lmScaled[:, 1], s = 2)
+#        plt.title(fName)
+#        if not os.path.exists('../landmarkPic'):
+#            os.makedirs('../landmarkPic')
+#        savefig('../landmarkPic/' + fName + '.png', bbox_inches='tight')
+#        plt.close('all')
+        
+        '''
+        Initial registration
+        '''
+        
+        # Import volume and rescale the z-axis by 1/2
+        vol = np.fromfile(fNameVol, dtype = np.int8)
+        vol = vol.reshape((200, 192, 192))
+        
+        # Interpolate the max volume values at the landmarks
+        depth = np.argmax(vol[::-1, :, :] > 0, axis = 0) / 2
+        lmScaled = lmScaled[targetLandmarkInds, :]
+        targetLandmarks = np.c_[lmScaled, interpn((np.arange(0, 192), np.arange(0, 192)), depth, lmScaled[:, ::-1], method = 'nearest')]
+        nzd = targetLandmarks[:, 2] != 0
+        targetLandmarks = targetLandmarks[nzd, :]
+    
+        # Initialize shape coefficients
+        # Find initial guess of the rigid transformation (rotation, translation, scale) based off of the mean face of the 3DMM
+        
+        if frame == 1:
+            rho = initialRegistration(m.idMean[:, sourceLandmarkInds[nzd]], targetLandmarks)
+            P = np.r_[np.zeros(m.idEval.size + m.expEval.size), rho]
+#        else:
+#            rho = initialRegistration(generateFace(np.r_[P[:m.idEval.size + m.expEval.size], np.zeros(6), 1], m, sourceLandmarkInds[nzd]), targetLandmarks)
+#            P[-7:] = rho
+            
+            # Further refine this initial guess while retrieving an initial guess of the shape parameters
 #            initFit = minimize(initialShape, P, args = (targetLandmarks, m, sourceLandmarkInds[nzd]))
 #            P = initFit['x']
-#        
-#        '''
-#        Optimization
-#        '''
-#        
-#        # Nearest neighbors fitting from scikit-learn to form correspondence between target vertices and source vertices during optimization
-#        xv, yv = np.meshgrid(np.arange(192), np.arange(192))
-#        target = np.c_[xv.flatten(), yv.flatten(), depth.flatten()][np.flatnonzero(depth), :]
-#        NN = NearestNeighbors(n_neighbors = 1, metric = 'l2')
-#        NN.fit(target)
-#        
-#        
-#        check_grad(shapeCost, shapeGrad, P, m, target, targetLandmarks, sourceLandmarkInds[nzd], NN)
-#    
-#        optFit = minimize(shapeCost, P, args = (m, target, targetLandmarks, sourceLandmarkInds[nzd], NN), method = 'cg', jac = shapeGrad)
-    
-#        cost = np.empty((50))
-#        for i in range(50):
-#    #        print('Iteration %d' % i)
-#            cost[i], dP = gaussNewton(P, m, target, targetLandmarks, sourceLandmarkInds[nzd], NN, calcId = (frame <= 20))
-#            
-#            P += dP
-#        
-#        """
-#        Transform translate and scale parameters for original image
-#        """
-#        
-#        # Save the parameters for the cropped/scaled image
-#        param[frame - 1, :] = P
-#        
-#        # Re-scale to original input image
-#        TS2orig[frame - 1, -1] = P[-1] / scale
-#        
-#        # Translate to account for original image dimensions
-#        # Case 1: The cropped picture is contained within the scaled image
-#        if (cropCorner >= 0).all() and ((192 + cropCorner) < scaledImgDim).all():
-#            TS2orig[frame - 1, :2] = (P[-4: -2] + cropCorner) / scale
-#        
-#        # Case 2: The crop corner is outside of the scaled image, but the extent of the cropped picture is within the bounds of the scaled image
-#        elif (cropCorner < 0).any() and ((192 + cropCorner) < scaledImgDim).all():
-#            TS2orig[frame - 1, :2] = (P[-4: -2] + cropCorner * (cropCorner > 0) + cropCorner * (cropCorner < 0) / 2) / scale
-#        
-#        # Case 3: The crop corner is outside of the scaled image, and the extent of the cropped picture is beyond the bounds of the scaled image
-#        elif (cropCorner < 0).any() and ((192 + cropCorner) > scaledImgDim).any():
-#            TS2orig[frame - 1, :2] = (P[-4: -2] + cropCorner * (cropCorner > 0) - (192 - (scaledImgDim - cropCorner * (cropCorner > 0))) / 2) / scale
         
-    #np.save('obamaParam', param)
-    #np.save('obamaParamWithoutRTS', np.c_[param[:, :m.idEval.size + m.expEval.size + 3], TS2orig])
+        '''
+        Optimization
+        '''
+        
+        # Nearest neighbors fitting from scikit-learn to form correspondence between target vertices and source vertices during optimization
+        xv, yv = np.meshgrid(np.arange(192), np.arange(192))
+        target = np.c_[xv.flatten(), yv.flatten(), depth.flatten()][np.flatnonzero(depth), :]
+        NN = NearestNeighbors(n_neighbors = 1, metric = 'l2')
+        NN.fit(target)
+        
+        
+#        grad = check_grad(shapeCost, shapeGrad, P, m, target, targetLandmarks, sourceLandmarkInds[nzd], NN)
+#        break
     
-#    source = generateFace(P, m)
-    #exportObj(generateFace(np.r_[np.zeros(m.idEval.size + m.expEval.size), rho], m), f = m.face, fNameOut = 'initReg')
-    #exportObj(source, f = m.face, fNameOut = 'source')
-#    exportObj(source[:, sourceLandmarkInds], fNameOut = 'sourceLandmarks')
-    #exportObj(target, fNameOut = 'target')
-    #exportObj(targetLandmarks, fNameOut = 'targetLandmarks')
-    
-    shape = np.load('/home/leon/f2f-fitting/kao3/depth/meshPoints/Adam_Freier_0001.npy')
-    depth = np.load('/home/leon/f2f-fitting/kao3/depth/Adam_Freier_0001.npy')
+#        optFit = minimize(shapeCost, P, args = (m, target, targetLandmarks, sourceLandmarkInds[nzd], NN), method = 'cg', jac = shapeGrad)
+        
+        if frame <= 20:
+            
+            cost = np.empty((50))
+            for i in range(cost.size):
+        #        print('Iteration %d' % i)
+                cost[i], dP = gaussNewton(P, m, target, targetLandmarks, sourceLandmarkInds[nzd], NN, calcId = True)
+                
+                P += dP
+        
+        else:
+            cost = np.empty((25))
+            for i in range(cost.size):
+        #        print('Iteration %d' % i)
+                cost[i], dP = gaussNewton(P, m, target, targetLandmarks, sourceLandmarkInds[nzd], NN, calcId = False)
+                
+                P += dP
+        
+        """
+        Transform translate and scale parameters for original image
+        """
+        
+        # Save the parameters for the cropped/scaled image
+        param[frame - 1, :] = P
+        
+        # Re-scale to original input image
+        TS2orig[frame - 1, -1] = P[-1] / scale
+        
+        # Translate to account for original image dimensions
+        # Case 1: The cropped picture is contained within the scaled image
+        if (cropCorner >= 0).all() and ((192 + cropCorner) < scaledImgDim).all():
+            TS2orig[frame - 1, :2] = (P[-4: -2] + cropCorner) / scale
+        
+        # Case 2: The crop corner is outside of the scaled image, but the extent of the cropped picture is within the bounds of the scaled image
+        elif (cropCorner < 0).any() and ((192 + cropCorner) < scaledImgDim).all():
+            TS2orig[frame - 1, :2] = (P[-4: -2] + cropCorner * (cropCorner > 0) + cropCorner * (cropCorner < 0) / 2) / scale
+        
+        # Case 3: The crop corner is outside of the scaled image, and the extent of the cropped picture is beyond the bounds of the scaled image
+        elif (cropCorner < 0).any() and ((192 + cropCorner) > scaledImgDim).any():
+            TS2orig[frame - 1, :2] = (P[-4: -2] + cropCorner * (cropCorner > 0) - (192 - (scaledImgDim - cropCorner * (cropCorner > 0))) / 2) / scale
+#        
+#    np.save('../param', param)
+#    np.save('../paramRTS2Orig', np.c_[param[:, :m.idEval.size + m.expEval.size + 3], TS2orig])
+#    np.save('../paramWithoutRTS', np.c_[param[:, :m.idEval.size + m.expEval.size], np.zeros((numFrames, 6)), np.ones(numFrames)])
+#    np.save('../RTS', TS2orig)
+#    
+##    source = generateFace(P, m)
+#    #exportObj(generateFace(np.r_[np.zeros(m.idEval.size + m.expEval.size), rho], m), f = m.face, fNameOut = 'initReg')
+#    #exportObj(source, f = m.face, fNameOut = 'source')
+##    exportObj(source[:, sourceLandmarkInds], fNameOut = 'sourceLandmarks')
+#    #exportObj(target, fNameOut = 'target')
+#    #exportObj(targetLandmarks, fNameOut = 'targetLandmarks')
+#    
 
-
+#
+#    if not os.path.exists('../shapes'):
+#        os.makedirs('../shapes')
+#    for shape in range(numFrames):
+#        fName = '{:0>5}'.format(shape + 1)
+#        exportObj(generateFace(np.r_[param[shape, :m.idEval.size + m.expEval.size], np.zeros(6), 1], m), f = m.face, fNameOut = '../shapes/' + fName)
     
-    from mpl_toolkits.mplot3d import Axes3D
-    fig = plt.figure()
-    ax = plt.axes(projection='3d')
-    xv, yv = np.meshgrid(np.arange(192), np.arange(192))
-    ax.scatter(xv, yv, depth, s = 0.1, c = 'b')
-    ax.set_xlabel('X')
-    ax.set_ylabel('Y')
-    ax.set_zlabel('Z')
+#    param = np.load('../paramWithoutRTS.npy')
+    
+    
+#    shape = generateFace(np.r_[param[0, :m.idEval.size + m.expEval.size], np.zeros(6), 1], m)
+#    tmesh = mlab.triangular_mesh(shape[0, :], shape[1, :], shape[2, :], m.face, scalars = np.arange(m.numVertices), color = (1, 1, 1))
+#    view = mlab.view()
+#    
+#    if not os.path.exists('../shapePic'):
+#        os.makedirs('../shapePic')
+#    for frame in range(21):
+#        fName = '{:0>5}'.format(frame + 1)
+#        shape = generateFace(np.r_[param[frame, :m.idEval.size + m.expEval.size], np.zeros(6), 1], m)
+#        
+##        mlab.options.offscreen = True
+#        tmesh = mlab.triangular_mesh(shape[0, :], shape[1, :], shape[2, :], m.face, scalars = np.arange(m.numVertices), color = (1, 1, 1))
+#        mlab.view(view[0], view[1], view[2], view[3])
+#        mlab.savefig('../shapePic/' + fName + '.png', figure = mlab.gcf())
+#        mlab.close(all = True)
+    
+    
+    
+    ##    shape = np.load('/home/leon/f2f-fitting/kao3/depth/meshPoints/Adam_Freier_0001.npy')
+##    depth = np.load('/home/leon/f2f-fitting/kao3/depth/Adam_Freier_0001.npy')
+    
+#    from mpl_toolkits.mplot3d import Axes3D
+#    fig = plt.figure()
+#    ax = plt.axes(projection='3d')
+#    xv, yv = np.meshgrid(np.arange(192), np.arange(192))
+#    ax.scatter(xv, yv, depth, s = 0.1, c = 'b')
+#    ax.set_xlabel('X')
+#    ax.set_ylabel('Y')
+#    ax.set_zlabel('Z')
     
     #im = vv.imread(fNameImgScaled)
     #

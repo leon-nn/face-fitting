@@ -16,18 +16,22 @@ from sklearn import metrics
 from mayavi import mlab
 from hmmlearn import hmm
 
+os.chdir('/home/leon/f2f-fitting/trump2/')
+numFrames = 3744 #2260
+fps = 24
+
 # Load audio tracks, pre-emphasize, and create feature vectors from mfcc, rmse, and deltas of mfcc
 nfft = 1024
 hopSamples = 512
 
-wav_kuro, fs_kuro = librosa.load('../data/kuro-obama/sound/cut.wav', sr=44100)
+wav_kuro, fs_kuro = librosa.load('kuro.wav', sr=44100)
 wav_kuro = np.r_[wav_kuro[0], wav_kuro[1:] - 0.97 * wav_kuro[:-1]]
 mfcc_kuro = librosa.feature.mfcc(y = wav_kuro, sr = fs_kuro, n_mfcc = 13, n_fft = nfft, hop_length = hopSamples)
 mfcc_kuro[0, :] = librosa.feature.rmse(y = wav_kuro, n_fft = nfft, hop_length = hopSamples)
 delta_kuro = librosa.feature.delta(mfcc_kuro)
 mfcc_kuro = np.r_[mfcc_kuro, delta_kuro]
 
-wav_siro, fs_siro = librosa.load('../data/shiro-obama/sound/obama_source_cut.wav', sr=44100)
+wav_siro, fs_siro = librosa.load('siro.wav', sr=44100)
 wav_siro = np.r_[wav_siro[0], wav_siro[1:] - 0.97 * wav_siro[:-1]]
 mfcc_siro = librosa.feature.mfcc(y = wav_siro, sr = fs_siro, n_mfcc = 13, n_fft = nfft, hop_length = hopSamples)
 mfcc_siro[0, :] = librosa.feature.rmse(y = wav_siro, n_fft = nfft, hop_length = hopSamples)
@@ -35,8 +39,6 @@ delta_siro = librosa.feature.delta(mfcc_siro)
 mfcc_siro = np.r_[mfcc_siro, delta_siro]
 
 # Find mfccs that are nearest to video frames in time
-numFrames = 2882
-fps = 24
 t_video = np.linspace(0, numFrames / fps, numFrames)
 
 t_audio_siro = np.linspace(0, mfcc_siro.shape[1] * hopSamples / fs_siro, mfcc_siro.shape[1])
@@ -64,7 +66,7 @@ obsLabels_siro = gmmObs.predict(mfcc_siro_sampled.T)
 obsLabels_kuro = gmmObs.predict(mfcc_kuro_sampled.T)
 
 # Find and cluster the features of the video in model-space
-m = Bunch(np.load('./models/bfm2017.npz'))
+m = Bunch(np.load('../models/bfm2017.npz'))
 m.idEvec = m.idEvec[:, :, :80]
 m.idEval = m.idEval[:80]
 m.expEvec = m.expEvec[:, :, :76]
@@ -72,7 +74,7 @@ m.expEval = m.expEval[:76]
 m.texEvec = m.texEvec[:, :, :80]
 m.texEval = m.texEval[:80]
 
-param = np.load('obama/obamaParam.npy')
+param = np.load('paramWithoutRTS.npy')
 #for frame in np.arange(1, numFrames + 1):
 #    shape = generateFace(np.r_[param[frame, :-7], np.zeros(6), 1], m)
 
@@ -120,8 +122,13 @@ stateSeq_kuro = model.predict(obsLabels_kuro.reshape(-1, 1))
 
 
 # Render and save pics
+if not os.path.exists('stateShapes'):
+    os.makedirs('stateShapes')
+np.save('siroStateSequence', stateSeq_siro)
+np.save('kuroStateSequence', stateSeq_kuro)
 for shape in range(N):
-    exportObj(generateFace(np.r_[param[-1, :80], stateShapes[stateSeq_siro[shape], :], np.zeros(6), 1], m), f = m.face, fNameOut = 'obama/stateShapes/' + str(shape))
+    fName = '{:0>5}'.format(shape + 1)
+    exportObj(generateFace(np.r_[param[-1, :80], stateShapes[stateSeq_siro[shape], :], np.zeros(6), 1], m), f = m.face, fNameOut = 'stateShapes/' + fName)
 
 
 #dir_siro = 'obama/hmm_siro_N' + str(N) + 'M' + str(M)
