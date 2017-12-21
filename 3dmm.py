@@ -619,7 +619,7 @@ def dR_dpsi(angles):
     Derivative of the rotation matrix with respect to the x-axis rotation.
     """
     psi, theta, phi = angles
-    return np.array([[0, np.sin(psi)*np.sin(phi) + np.cos(psi)*np.sin(theta)*np.cos(phi), np.cos(psi)*np.sin(phi) - np.cos(psi)*np.sin(theta)*np.cos(phi)], [0, -np.sin(psi)*np.cos(phi) + np.cos(psi)*np.sin(theta)*np.sin(phi), -np.cos(psi)*np.cos(phi) - np.sin(psi)*np.sin(theta)*np.sin(phi)], [0, np.cos(psi)*np.cos(theta), -np.sin(psi)*np.cos(theta)]])
+    return np.array([[0, np.sin(psi)*np.sin(phi) + np.cos(psi)*np.sin(theta)*np.cos(phi), np.cos(psi)*np.sin(phi) - np.sin(psi)*np.sin(theta)*np.cos(phi)], [0, -np.sin(psi)*np.cos(phi) + np.cos(psi)*np.sin(theta)*np.sin(phi), -np.cos(psi)*np.cos(phi) - np.sin(psi)*np.sin(theta)*np.sin(phi)], [0, np.cos(psi)*np.cos(theta), -np.sin(psi)*np.cos(theta)]])
 
 def dR_dtheta(angles):
     """
@@ -824,7 +824,7 @@ def shBasis(alb, n):
     
     return I
 
-dirName = '/home/nguyen/Documents/Data/facewarehouse/FaceWarehouse_Data_0/'
+#dirName = '/home/nguyen/Documents/Data/facewarehouse/FaceWarehouse_Data_0/'
 
 #n = Bunch(np.load('./models/fw.npz'))
 m = Bunch(np.load('./models/bfm2017.npz'))
@@ -835,8 +835,11 @@ m.expEval = m.expEval[:76]
 m.texEvec = m.texEvec[:, :, :80]
 m.texEval = m.texEval[:80]
 
-bfm2fw = np.array([0, 2, 3, 4, 5, 6, 7, 8, 13, 14, 16, 17, 18, 21, 22, 23, 24, 29, 30, 32, 33, 34, 37, 38, 39])
-fw2bfm = np.array([7, 59, 55, 62, 49, 39, 65, 34, 33, 31, 32, 52, 50, 45, 41, 40, 30, 29, 27, 28, 46, 48, 44, 37, 38])
+#bfm2fw = np.array([0, 2, 3, 4, 5, 6, 7, 8, 13, 14, 16, 17, 18, 21, 22, 23, 24, 29, 30, 32, 33, 34, 37, 38, 39])
+#fw2bfm = np.array([7, 59, 55, 62, 49, 39, 65, 34, 33, 31, 32, 52, 50, 45, 41, 40, 30, 29, 27, 28, 46, 48, 44, 37, 38])
+
+targetLandmarkInds = np.array([0, 1, 2, 3, 8, 13, 14, 15, 16, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 61, 62, 63, 65, 66, 67, 68, 69])
+sourceLandmarkInds = np.array([16203, 16235, 16260, 16290, 27061, 22481, 22451, 22426, 22394, 8134, 8143, 8151, 8156, 6986, 7695, 8167, 8639, 9346, 2345, 4146, 5180, 6214, 4932, 4158, 10009, 11032, 12061, 13872, 12073, 11299, 5264, 6280, 7472, 8180, 8888, 10075, 11115, 9260, 8553, 8199, 7845, 7136, 7600, 8190, 8780, 8545, 8191, 7837, 4538, 11679])
 
 idCoef = np.zeros(m.idEval.shape)
 idCoef[0] = 1
@@ -847,20 +850,20 @@ texCoef[0] = 1
 
 ## Load 3D vertex indices of landmarks and find their vertices on the neutral face
 #landmarkInds3D = np.load('./data/landmarkInds3D.npy')
-landmarkInds3D = np.r_[m.landmarkInd[bfm2fw], 16225, 16246, 16276, 22467, 22437, 22416]
+#landmarkInds3D = np.r_[m.landmarkInd[bfm2fw], 16225, 16246, 16276, 22467, 22437, 22416]
 
 #fwlm = landmarkInds3D[np.r_[1, 3, 5, np.arange(7, 16)]]
 #bfmlm = landmarkInds3D[[25, 0, 30, 18, 17, 9, 8, 20, 4, 11, 2, 6]]
 
-pose = 11
-tester = 0
+#pose = 11
+#tester = 0
 
 # Gather 2D landmarks that correspond to manually chosen 3D landmarks
 #landmarkInds2D = np.array([0, 1, 4, 7, 10, 13, 14, 27, 29, 31, 33, 46, 49, 52, 55, 65])
-landmarkInds2D = np.r_[fw2bfm, 1, 2, 3, 11, 12, 13]
-landmarks = np.load('./data/landmarks2D.npy')[pose, tester, landmarkInds2D, :]
-landmarkPixelInd = (landmarks * np.array([639, 479])).astype(int)
-landmarkPixelInd[:, 1] = 479 - landmarkPixelInd[:, 1]
+#landmarkInds2D = np.r_[fw2bfm, 1, 2, 3, 11, 12, 13]
+#landmarks = np.load('./data/landmarks2D.npy')[pose, tester, landmarkInds2D, :]
+#landmarkPixelInd = (landmarks * np.array([639, 479])).astype(int)
+#landmarkPixelInd[:, 1] = 479 - landmarkPixelInd[:, 1]
 
 ## Get target 3D coordinates of depth maps at the 16 landmark locations
 #depth = np.load('./data/depthMaps.npy')[pose, tester, :, :]

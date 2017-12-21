@@ -15,9 +15,10 @@ from sklearn.cluster import KMeans
 from sklearn import metrics
 from mayavi import mlab
 from hmmlearn import hmm
+from sklearn.preprocessing import StandardScaler
 
-os.chdir('/home/leon/f2f-fitting/trump2/')
-numFrames = 3744 #2260
+os.chdir('/home/leon/f2f-fitting/obama/')
+numFrames = 2882 #3744 #2260
 fps = 24
 
 # Load audio tracks, pre-emphasize, and create feature vectors from mfcc, rmse, and deltas of mfcc
@@ -74,7 +75,7 @@ m.expEval = m.expEval[:76]
 m.texEvec = m.texEvec[:, :, :80]
 m.texEval = m.texEval[:80]
 
-param = np.load('paramWithoutRTS.npy')
+param = np.load('paramRTS2Orig.npy')
 #for frame in np.arange(1, numFrames + 1):
 #    shape = generateFace(np.r_[param[frame, :-7], np.zeros(6), 1], m)
 
@@ -118,18 +119,36 @@ stateSeq_siro = model.predict(obsLabels_siro.reshape(-1, 1))
 # Kuro
 stateSeq_kuro = model.predict(obsLabels_kuro.reshape(-1, 1))
 
-# Filter through the state sequences to filter the shape renderings
-
+np.save('siroGroundTruth', stateLabels)
+np.save('siroStateSequence', stateSeq_siro)
+np.save('kuroStateSequence', stateSeq_kuro)
+np.save('shapeStateParams', stateShapes)
 
 # Render and save pics
 if not os.path.exists('stateShapes'):
     os.makedirs('stateShapes')
-np.save('siroStateSequence', stateSeq_siro)
-np.save('kuroStateSequence', stateSeq_kuro)
 for shape in range(N):
     fName = '{:0>5}'.format(shape + 1)
     exportObj(generateFace(np.r_[param[-1, :80], stateShapes[stateSeq_siro[shape], :], np.zeros(6), 1], m), f = m.face, fNameOut = 'stateShapes/' + fName)
 
+selectedFrames = np.zeros(stateSeq_kuro.size, dtype = int)
+scaler = StandardScaler()
+normalizedRTS = scaler.fit_transform(param[:, -7:])
+for i in range(stateSeq_kuro.size):
+    # Find the video frames that match to the current shape state
+    frames = np.argwhere(stateLabels == stateSeq_kuro[i]).squeeze()
+    
+    # From these frames, find the frame that is closest to the i-th video frame in terms of rotation, translation, and scale
+    candidateFramesRTS = normalizedRTS[frames, :]
+    currentFrameRTS = normalizedRTS[i, :]
+    
+    NN = NearestNeighbors(n_neighbors = 1, metric = 'l2')
+    
+    NN.fit(candidateFramesRTS)
+    distance, ind = NN.kneighbors(currentFrameRTS.reshape(1, -1))
+    
+    selectedFrames[i] = frames[ind.squeeze()]
+np.save('kuroSelectedFrames', selectedFrames)
 
 #dir_siro = 'obama/hmm_siro_N' + str(N) + 'M' + str(M)
 #dir_kuro = 'obama/hmm_kuro_N' + str(N) + 'M' + str(M)
