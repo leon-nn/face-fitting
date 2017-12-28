@@ -291,7 +291,6 @@ def rotMat2angle(R):
         
         return np.dot(Rz, np.dot(Ry, Rx))
 
-@jit
 def perspectiveTransformKinect(d, inverse = False):
     """
     Transformation between pixel indices (u, v) of depth map to real-world coordinates in mm (x, y) for Kinect v1 depth camera (640x480 resolution). Depth values z are in mm. In the forward direction, go from (u, v, z) to (x, y, z). In the inverse direction, go from (x, y, z) to (u, v, z).
@@ -319,7 +318,6 @@ def perspectiveTransformKinect(d, inverse = False):
         
         return uvz, nonZeroZ
 
-@jit
 def initialRegistration(A, B):
     """
     Find the rotation matrix R, translation vector t, and scaling factor s to reconstruct the 3D vertices of the target B from the source A as B' = s*R*A.T + t.
@@ -470,7 +468,7 @@ def exportObj(v, c = None, vt = None, f = None, fNameIn = None, fNameOut = 'test
     Write vertices to an .obj file.
     """
     # Make sure x, y, z vertex coordinates are along the columns
-    if (c is None) and (v.shape[1] != 3):
+    if v.shape[1] != 3:
         v = v.T
     
     # Add the .obj extension if necessary
@@ -517,6 +515,8 @@ def exportObj(v, c = None, vt = None, f = None, fNameIn = None, fNameOut = 'test
                 for vertex in v:
                     fo.write('v ' + '{:.6f}'.format(vertex[0]) + ' ' + '{:.6f}'.format(vertex[1]) + ' ' + '{:.6f}'.format(vertex[2]) + '\n')
             else:
+                if c.shape[1] != 3:
+                    c = c.T
                 for i in range(v.shape[0]):
                     fo.write('v ' + '{:.6f}'.format(v[i, 0]) + ' ' + '{:.6f}'.format(v[i, 1]) + ' ' + '{:.6f}'.format(v[i, 2]) + ' ' + '{:.6f}'.format(c[i, 0]) + ' ' + '{:.6f}'.format(c[i, 1]) + ' ' + '{:.6f}'.format(c[i, 2]) + '\n')
             
@@ -635,111 +635,239 @@ def dR_dphi(angles):
     psi, theta, phi = angles
     return np.array([[-np.cos(theta)*np.sin(phi), -np.cos(psi)*np.cos(phi) - np.sin(psi)*np.sin(theta)*np.sin(phi), np.sin(psi)*np.cos(phi) - np.cos(psi)*np.sin(theta)*np.sin(phi)], [np.cos(theta)*np.cos(phi), -np.cos(psi)*np.sin(phi) + np.sin(psi)*np.sin(theta)*np.cos(phi), np.sin(psi)*np.sin(phi) + np.cos(psi)*np.sin(theta)*np.cos(phi)], [0, 0, 0]])
 
-def gaussNewton(P, target, targetLandmarks, sourceLandmarkInds, NN):
+def gaussNewton(P, m, target, targetLandmarks, sourceLandmarkInds, NN, jacobi = True, calcId = True):
     """
     Energy function to be minimized for fitting.
     """
-    # Load geometric models
-    idEvec = np.load('./models/idEvec.npy')
-    idEval = np.load('./models/idEval.npy')
-    idEvec = np.reshape(idEvec, (3, idEvec.shape[0]//3, 80), order = 'F')
-    idMean = np.load('./models/idMean.npy')
-    idMean = np.reshape(idMean, (3, idMean.size//3), order = 'F')
-    expEvec = np.load('./models/expEvec.npy')
-    expEval = np.load('./models/expEval.npy')
-    expEvec = np.reshape(expEvec, (3, expEvec.shape[0]//3, 76), order = 'F')
-    
     # Shape eigenvector coefficients
-    alpha = P[: idEvec.shape[2]]
-    delta = P[idEvec.shape[2]: idEvec.shape[2] + expEvec.shape[2]]
+    idCoef = P[: m.idEval.size]
+    expCoef = P[m.idEval.size: m.idEval.size + m.expEval.size]
     
     # Rotation Euler angles, translation vector, scaling factor
-    angles = P[idEvec.shape[2] + expEvec.shape[2]:][:3]
+    angles = P[m.idEval.size + m.expEval.size:][:3]
     R = rotMat2angle(angles)
-    t = P[idEvec.shape[2] + expEvec.shape[2]:][3: 6]
-    s = P[idEvec.shape[2] + expEvec.shape[2]:][6]
+    t = P[m.idEval.size + m.expEval.size:][3: 6]
+    s = P[m.idEval.size + m.expEval.size:][6]
     
+    # Transpose if necessary
     if targetLandmarks.shape[0] != 3:
         targetLandmarks = targetLandmarks.T
     
     # The eigenmodel, before rigid transformation and scaling
-    model = idMean + np.tensordot(idEvec, alpha, axes = 1) + np.tensordot(expEvec, delta, axes = 1)
+    model = m.idMean + np.tensordot(m.idEvec, idCoef, axes = 1) + np.tensordot(m.expEvec, expCoef, axes = 1)
     
     # After rigid transformation and scaling
     source = s*np.dot(R, model) + t[:, np.newaxis]
     
     # Find the nearest neighbors of the target to the source vertices
-    start = clock()
+#    start = clock()
     distance, ind = NN.kneighbors(source.T)
     targetNN = target[ind.squeeze(axis = 1), :].T
-    print('NN: %f' % (clock() - start))
+#    print('NN: %f' % (clock() - start))
     
-    start = clock()
     # Calculate resisduals
     rVert = targetNN - source
     rLand = targetLandmarks - source[:, sourceLandmarkInds]
-    rAlpha = alpha ** 2 / idEval
-    rDelta = delta ** 2 / expEval
-    r = np.r_[rVert.flatten('F'), rLand.flatten('F'), rAlpha, rDelta]
-    
-    # Calculate Jacobian
-    drV_dalpha = -s*np.tensordot(R, idEvec, axes = 1)
-    drV_ddelta = -s*np.tensordot(R, expEvec, axes = 1)
-    drV_dpsi = -s*np.dot(dR_dpsi(angles), model)
-    drV_dtheta = -s*np.dot(dR_dtheta(angles), model)
-    drV_dphi = -s*np.dot(dR_dphi(angles), model)
-    drV_dt = -np.tile(np.eye(3), [source.shape[1], 1])
-    drV_ds = -np.dot(R, model)
-    
-    drL_dalpha = drV_dalpha[:, sourceLandmarkInds, :]
-    drL_ddelta = drV_ddelta[:, sourceLandmarkInds, :]
-    drL_dpsi = drV_dpsi[:, sourceLandmarkInds]
-    drL_dtheta = drV_dtheta[:, sourceLandmarkInds]
-    drL_dphi = drV_dphi[:, sourceLandmarkInds]
-    drL_dt = -np.tile(np.eye(3), [sourceLandmarkInds.size, 1])
-    drL_ds = drV_ds[:, sourceLandmarkInds]
-    
-    drR_dalpha = np.diag(2*alpha / idEval)
-    drR_ddelta = np.diag(2*delta / expEval)
-    
-    J = np.r_[np.c_[drV_dalpha.reshape((np.prod(source.shape), alpha.size), order = 'F'), drV_ddelta.reshape((np.prod(source.shape), delta.size), order = 'F'), drV_dpsi.flatten('F'), drV_dtheta.flatten('F'), drV_dphi.flatten('F'), drV_dt, drV_ds.flatten('F')], np.c_[drL_dalpha.reshape((np.prod(targetLandmarks.shape), alpha.size), order = 'F'), drL_ddelta.reshape((np.prod(targetLandmarks.shape), delta.size), order = 'F'), drL_dpsi.flatten('F'), drL_dtheta.flatten('F'), drL_dphi.flatten('F'), drL_dt, drL_ds.flatten('F')], np.c_[drR_dalpha, np.zeros((alpha.size, delta.size + 7))], np.c_[np.zeros((delta.size, alpha.size)), drR_ddelta, np.zeros((delta.size, 7))]]
-    
-    # Parameter update (Gauss-Newton)
-    dP = -np.linalg.inv(np.dot(J.T, J)).dot(J.T).dot(r)
-    
-    print('GN: %f' % (clock() - start))
+    rAlpha = idCoef ** 2 / m.idEval
+    rDelta = expCoef ** 2 / m.expEval
     
     # Calculate costs
-    costVert = np.linalg.norm(rVert, axis = 0).sum()
-    costLand = np.linalg.norm(targetLandmarks - source[:, sourceLandmarkInds], axis = 0).sum()
+    Ever = np.linalg.norm(rVert, axis = 0).sum() / m.numVertices
+    Elan = np.linalg.norm(rLand, axis = 0).sum() / sourceLandmarkInds.size
+    Ereg = np.sum(rAlpha) + np.sum(rDelta)
     
-    totCost = costVert + costLand + np.sum(rAlpha) + np.sum(rDelta)
+    if jacobi:
+#        start = clock()
+        
+        drV_dalpha = -s*np.tensordot(R, m.idEvec, axes = 1)
+        drV_ddelta = -s*np.tensordot(R, m.expEvec, axes = 1)
+        drV_dpsi = -s*np.dot(dR_dpsi(angles), model)
+        drV_dtheta = -s*np.dot(dR_dtheta(angles), model)
+        drV_dphi = -s*np.dot(dR_dphi(angles), model)
+        drV_dt = -np.tile(np.eye(3), [source.shape[1], 1])
+        drV_ds = -np.dot(R, model)
+        
+        drR_dalpha = np.diag(2*idCoef / m.idEval)
+        drR_ddelta = np.diag(2*expCoef / m.expEval)
+        
+        # Calculate Jacobian
+        if calcId:
+            
+            r = np.r_[rVert.flatten('F'), rLand.flatten('F'), rAlpha, rDelta]
+        
+            J = np.r_[np.c_[drV_dalpha.reshape((source.size, idCoef.size), order = 'F'), drV_ddelta.reshape((source.size, expCoef.size), order = 'F'), drV_dpsi.flatten('F'), drV_dtheta.flatten('F'), drV_dphi.flatten('F'), drV_dt, drV_ds.flatten('F')], np.c_[drV_dalpha[:, sourceLandmarkInds, :].reshape((targetLandmarks.size, idCoef.size), order = 'F'), drV_ddelta[:, sourceLandmarkInds, :].reshape((targetLandmarks.size, expCoef.size), order = 'F'), drV_dpsi[:, sourceLandmarkInds].flatten('F'), drV_dtheta[:, sourceLandmarkInds].flatten('F'), drV_dphi[:, sourceLandmarkInds].flatten('F'), drV_dt[:sourceLandmarkInds.size * 3, :], drV_ds[:, sourceLandmarkInds].flatten('F')], np.c_[drR_dalpha, np.zeros((idCoef.size, expCoef.size + 7))], np.c_[np.zeros((expCoef.size, idCoef.size)), drR_ddelta, np.zeros((expCoef.size, 7))]]
+            
+            # Parameter update (Gauss-Newton)
+            dP = -np.linalg.inv(np.dot(J.T, J)).dot(J.T).dot(r)
+        
+        else:
+            
+            r = np.r_[rVert.flatten('F'), rLand.flatten('F'), rDelta]
+            
+            J = np.r_[np.c_[drV_ddelta.reshape((source.size, expCoef.size), order = 'F'), drV_dpsi.flatten('F'), drV_dtheta.flatten('F'), drV_dphi.flatten('F'), drV_dt, drV_ds.flatten('F')], np.c_[drV_ddelta[:, sourceLandmarkInds, :].reshape((np.prod(targetLandmarks.shape), expCoef.size), order = 'F'), drV_dpsi[:, sourceLandmarkInds].flatten('F'), drV_dtheta[:, sourceLandmarkInds].flatten('F'), drV_dphi[:, sourceLandmarkInds].flatten('F'), drV_dt[:sourceLandmarkInds.size * 3, :], drV_ds[:, sourceLandmarkInds].flatten('F')], np.c_[drR_ddelta, np.zeros((expCoef.size, 7))]]
+            
+            # Parameter update (Gauss-Newton)
+            dP = np.r_[np.zeros(m.idEval.size), -np.linalg.inv(np.dot(J.T, J)).dot(J.T).dot(r)]
+        
+#        print('GN: %f' % (clock() - start))
+        
+        return Ever + Elan + Ereg, dP
     
-    return dP, totCost, target
+    return Ever + Elan + Ereg
 
-def generateFace(P):
+def initialShapeCost(P, target, m, sourceLandmarkInds, w = (1, 1)):
+    # Shape eigenvector coefficients
+    idCoef = P[: m.idEval.size]
+    expCoef = P[m.idEval.size: m.idEval.size + m.expEval.size]
+    
+    # Landmark fitting cost
+    source = generateFace(P, m, ind = sourceLandmarkInds)
+    
+    rlan = (source - target.T).flatten('F')
+    Elan = np.dot(rlan, rlan) / sourceLandmarkInds.size
+    
+    # Regularization cost
+    Ereg = np.sum(idCoef ** 2 / m.idEval) + np.sum(expCoef ** 2 / m.expEval)
+    
+    return w[0] * Elan + w[1] * Ereg
+
+def initialShapeGrad(P, target, m, sourceLandmarkInds, w = (1, 1)):
+    # Shape eigenvector coefficients
+    idCoef = P[: m.idEval.size]
+    expCoef = P[m.idEval.size: m.idEval.size + m.expEval.size]
+    
+    # Rotation Euler angles, translation vector, scaling factor
+    angles = P[m.idEval.size + m.expEval.size:][:3]
+    R = rotMat2angle(angles)
+    t = P[m.idEval.size + m.expEval.size:][3: 6]
+    s = P[m.idEval.size + m.expEval.size:][6]
+    
+    # The eigenmodel, before rigid transformation and scaling
+    model = m.idMean[:, sourceLandmarkInds] + np.tensordot(m.idEvec[:, sourceLandmarkInds, :], idCoef, axes = 1) + np.tensordot(m.expEvec[:, sourceLandmarkInds, :], expCoef, axes = 1)
+    
+    # After rigid transformation and scaling
+    source = s*np.dot(R, model) + t[:, np.newaxis]
+    
+    rlan = (source - target.T).flatten('F')
+        
+    drV_dalpha = s*np.tensordot(R, m.idEvec[:, sourceLandmarkInds, :], axes = 1)
+    drV_ddelta = s*np.tensordot(R, m.expEvec[:, sourceLandmarkInds, :], axes = 1)
+    drV_dpsi = s*np.dot(dR_dpsi(angles), model)
+    drV_dtheta = s*np.dot(dR_dtheta(angles), model)
+    drV_dphi = s*np.dot(dR_dphi(angles), model)
+    drV_dt = np.tile(np.eye(3), [sourceLandmarkInds.size, 1])
+    drV_ds = np.dot(R, model)
+    
+    Jlan = np.c_[drV_dalpha.reshape((source.size, idCoef.size), order = 'F'), drV_ddelta.reshape((source.size, expCoef.size), order = 'F'), drV_dpsi.flatten('F'), drV_dtheta.flatten('F'), drV_dphi.flatten('F'), drV_dt, drV_ds.flatten('F')]
+    
+    return 2 * (w[0] * np.dot(Jlan.T, rlan) / sourceLandmarkInds.size + w[1] * np.r_[idCoef / m.idEval, expCoef / m.expEval, np.zeros(7)])
+
+def shapeCost(P, m, target, targetLandmarks, sourceLandmarkInds, NN, w = (1, 1, 1), calcID = True):
+    # Shape eigenvector coefficients
+    idCoef = P[: m.idEval.size]
+    expCoef = P[m.idEval.size: m.idEval.size + m.expEval.size]
+    
+    # Transpose target if necessary
+    if targetLandmarks.shape[0] != 3:
+        targetLandmarks = targetLandmarks.T
+    
+    # After rigid transformation and scaling
+    source = generateFace(P, m)
+    
+    # Find the nearest neighbors of the target to the source vertices
+    distance, ind = NN.kneighbors(source.T)
+    targetNN = target[ind.squeeze(axis = 1), :].T
+    
+    # Calculate resisduals
+    rver = (source - targetNN).flatten('F')
+    rlan = (source[:, sourceLandmarkInds] - targetLandmarks).flatten('F')
+    
+    # Calculate costs
+    Ever = np.dot(rver, rver) / m.numVertices
+    Elan = np.dot(rlan, rlan) / sourceLandmarkInds.size
+    
+    if calcID:
+        
+        Ereg = np.sum(idCoef ** 2 / m.idEval) + np.sum(expCoef ** 2 / m.expEval)
+    
+    else:
+        
+        Ereg = np.sum(expCoef ** 2 / m.expEval)
+    
+    return w[0] * Ever + w[1] * Elan + w[2] * Ereg
+
+def shapeGrad(P, m, target, targetLandmarks, sourceLandmarkInds, NN, w = (1, 1, 1), calcID = True):
+    # Shape eigenvector coefficients
+    idCoef = P[: m.idEval.size]
+    expCoef = P[m.idEval.size: m.idEval.size + m.expEval.size]
+    
+    # Rotation Euler angles, translation vector, scaling factor
+    angles = P[m.idEval.size + m.expEval.size:][:3]
+    R = rotMat2angle(angles)
+    t = P[m.idEval.size + m.expEval.size:][3: 6]
+    s = P[m.idEval.size + m.expEval.size:][6]
+    
+    # Transpose if necessary
+    if targetLandmarks.shape[0] != 3:
+        targetLandmarks = targetLandmarks.T
+    
+    # The eigenmodel, before rigid transformation and scaling
+    model = m.idMean + np.tensordot(m.idEvec, idCoef, axes = 1) + np.tensordot(m.expEvec, expCoef, axes = 1)
+    
+    # After rigid transformation and scaling
+    source = s*np.dot(R, model) + t[:, np.newaxis]
+    
+    # Find the nearest neighbors of the target to the source vertices
+    distance, ind = NN.kneighbors(source.T)
+    targetNN = target[ind.squeeze(axis = 1), :].T
+    
+    # Calculate resisduals
+    rver = (source - targetNN).flatten('F')
+    rlan = (source[:, sourceLandmarkInds] - targetLandmarks).flatten('F')
+        
+    drV_ddelta = s*np.tensordot(R, m.expEvec, axes = 1)
+    drV_dpsi = s*np.dot(dR_dpsi(angles), model)
+    drV_dtheta = s*np.dot(dR_dtheta(angles), model)
+    drV_dphi = s*np.dot(dR_dphi(angles), model)
+    drV_dt = np.tile(np.eye(3), [m.numVertices, 1])
+    drV_ds = np.dot(R, model)
+    
+    if calcID:
+        
+        drV_dalpha = s*np.tensordot(R, m.idEvec, axes = 1)
+        
+        Jver = np.c_[drV_dalpha.reshape((source.size, idCoef.size), order = 'F'), drV_ddelta.reshape((source.size, expCoef.size), order = 'F'), drV_dpsi.flatten('F'), drV_dtheta.flatten('F'), drV_dphi.flatten('F'), drV_dt, drV_ds.flatten('F')]
+        
+        Jlan = np.c_[drV_dalpha[:, sourceLandmarkInds, :].reshape((targetLandmarks.size, idCoef.size), order = 'F'), drV_ddelta[:, sourceLandmarkInds, :].reshape((targetLandmarks.size, expCoef.size), order = 'F'), drV_dpsi[:, sourceLandmarkInds].flatten('F'), drV_dtheta[:, sourceLandmarkInds].flatten('F'), drV_dphi[:, sourceLandmarkInds].flatten('F'), drV_dt[:sourceLandmarkInds.size * 3, :], drV_ds[:, sourceLandmarkInds].flatten('F')]
+        
+        return 2 * (w[0] * np.dot(Jver.T, rver) / m.numVertices + w[1] * np.dot(Jlan.T, rlan) / sourceLandmarkInds.size + w[2] * np.r_[idCoef / m.idEval, expCoef / m.expEval, np.zeros(7)])
+    
+    else:
+        
+        Jver = np.c_[drV_ddelta.reshape((source.size, expCoef.size), order = 'F'), drV_dpsi.flatten('F'), drV_dtheta.flatten('F'), drV_dphi.flatten('F'), drV_dt, drV_ds.flatten('F')]
+        
+        Jlan = np.c_[drV_ddelta[:, sourceLandmarkInds, :].reshape((targetLandmarks.size, expCoef.size), order = 'F'), drV_dpsi[:, sourceLandmarkInds].flatten('F'), drV_dtheta[:, sourceLandmarkInds].flatten('F'), drV_dphi[:, sourceLandmarkInds].flatten('F'), drV_dt[:sourceLandmarkInds.size * 3, :], drV_ds[:, sourceLandmarkInds].flatten('F')]
+        
+        return 2 * (np.r_[np.zeros(idCoef.size), w[0] * np.dot(Jver.T, rver) / m.numVertices] + np.r_[np.zeros(idCoef.size), w[1] * np.dot(Jlan.T, rlan) / sourceLandmarkInds.size] + w[2] * np.r_[np.zeros(idCoef.size), expCoef / m.expEval, np.zeros(7)])
+
+def generateFace(P, m, ind = None):
     """
     Generate vertices based off of eigenmodel and vector of parameters
     """
-    # Load geometric models
-    idEvec = np.load('./models/idEvec.npy')
-    idEvec = np.reshape(idEvec, (3, idEvec.shape[0]//3, 80), order = 'F')
-    idMean = np.load('./models/idMean.npy')
-    idMean = np.reshape(idMean, (3, idMean.size//3), order = 'F')
-    expEvec = np.load('./models/expEvec.npy')
-    expEvec = np.reshape(expEvec, (3, expEvec.shape[0]//3, 76), order = 'F')
-    
     # Shape eigenvector coefficients
-    idCoef = P[: idEvec.shape[2]]
-    expCoef = P[idEvec.shape[2]: idEvec.shape[2] + expEvec.shape[2]]
+    idCoef = P[: m.idEvec.shape[2]]
+    expCoef = P[m.idEvec.shape[2]: m.idEvec.shape[2] + m.expEvec.shape[2]]
     
     # Rotation Euler angles, translation vector, scaling factor
-    R = rotMat2angle(P[idEvec.shape[2] + expEvec.shape[2]:][:3])
-    t = P[idEvec.shape[2] + expEvec.shape[2]:][3: 6]
-    s = P[idEvec.shape[2] + expEvec.shape[2]:][6]
+    R = rotMat2angle(P[m.idEvec.shape[2] + m.expEvec.shape[2]:][:3])
+    t = P[m.idEvec.shape[2] + m.expEvec.shape[2]:][3: 6]
+    s = P[m.idEvec.shape[2] + m.expEvec.shape[2]:][6]
     
     # The eigenmodel, before rigid transformation and scaling
-    model = idMean + np.tensordot(idEvec, idCoef, axes = 1) + np.tensordot(expEvec, expCoef, axes = 1)
+    if ind is None:
+        model = m.idMean + np.tensordot(m.idEvec, idCoef, axes = 1) + np.tensordot(m.expEvec, expCoef, axes = 1)
+    else:
+        model = m.idMean[:, ind] + np.tensordot(m.idEvec[:, ind, :], idCoef, axes = 1) + np.tensordot(m.expEvec[:, ind, :], expCoef, axes = 1)
     
     # After rigid transformation and scaling
     return s*np.dot(R, model) + t[:, np.newaxis]
@@ -824,9 +952,142 @@ def shBasis(alb, n):
     
     return I
 
-#dirName = '/home/nguyen/Documents/Data/facewarehouse/FaceWarehouse_Data_0/'
+def estCamMat(lm2D, lm3D, cam = 'perspective'):
+    """
+    Direct linear transform / "Gold Standard Algorithm" to estimate camera matrix from 2D-3D landmark correspondences. The input 2D and 3D landmark NumPy arrays have XY and XYZ coordinates in each row, respectively. For an orthographic camera, the algebraic and geometric errors are equivalent, so there is no need to do the least squares step at the end. The orthographic camera returns a 2x4 camera matrix, since the last row is just [0, 0, 0, 1].
+    """
+    # Normalize landmark coordinates; preconditioning
+    numLandmarks = lm2D.shape[0]
+    
+    c2D = np.mean(lm2D, axis = 0)
+    uvCentered = lm2D - c2D
+    s2D = np.linalg.norm(uvCentered, axis = 1).mean()
+    x = np.c_[uvCentered / s2D * np.sqrt(2), np.ones(numLandmarks)]
+    
+    c3D = np.mean(lm3D, axis = 0)
+    xyzCentered = lm3D - c3D
+    s3D = np.linalg.norm(xyzCentered, axis = 1).mean()
+    X = np.c_[xyzCentered / s3D * np.sqrt(3), np.ones(numLandmarks)]
+    
+    # Similarity transformations for normalization
+    Tinv = np.array([[s2D, 0, c2D[0]], [0, s2D, c2D[1]], [0, 0, 1]])
+    U = np.linalg.inv([[s3D, 0, 0, c3D[0]], [0, s3D, 0, c3D[1]], [0, 0, s3D, c3D[2]], [0, 0, 0, 1]])
+    
+    if cam == 'orthographic':
+        # Build linear system of equations in 8 unknowns of projection matrix
+        A = np.zeros((2 * numLandmarks, 8))
+        
+        A[0: 2*numLandmarks - 1: 2, :4] = X
+        A[1: 2*numLandmarks: 2, 4:] = X
+        
+        # Solve linear system and de-normalize
+        p8 = np.linalg.lstsq(A, x.flatten())[0]
+        
+        Pnorm = np.r_[p8, 0, 0, 0, 1].reshape(3, 4)
+        P = Tinv.dot(Pnorm).dot(U)
+        
+        return P[:2, :]
+    
+    elif cam == 'perspective':
+        # Matrix for homogenous system of equations to solve for camera matrix
+        A = np.zeros((2 * numLandmarks, 12))
+        
+        A[0: 2*numLandmarks - 1: 2, 0: 4] = X
+        A[0: 2*numLandmarks - 1: 2, 8:] = -x[:, 0, np.newaxis] * X
+        
+        A[1: 2*numLandmarks: 2, 4: 8] = -X
+        A[1: 2*numLandmarks: 2, 8:] = x[:, 1, np.newaxis] * X
+        
+        # Take the SVD and take the last row of V', which corresponds to the lowest eigenvalue, as the homogenous solution
+        V = np.linalg.svd(A, full_matrices = 0)[-1]
+        Pnorm = np.reshape(V[-1, :], (3, 4))
+        
+        # Further nonlinear LS to minimize error between 2D landmarks and 3D projections onto 2D plane.
+        def cameraProjectionResidual(M, x, X):
+            """
+            min_{P} sum_{i} || x_i - PX_i ||^2
+            """
+            return x.flatten() - np.dot(X, M.reshape((3, 4)).T).flatten()
+        
+        Pgold = least_squares(cameraProjectionResidual, Pnorm.flatten(), args = (x, X))
+        
+        # Denormalize P
+        P = Tinv.dot(Pgold.x.reshape(3, 4)).dot(U)
+        
+        return P
 
-#n = Bunch(np.load('./models/fw.npz'))
+def splitCamMat(P, cam = 'perspective'):
+    """
+    """
+    if cam == 'orthographic':
+        # Extract params from orthographic projection matrix
+        R1 = P[0, 0: 3]
+        R2 = P[1, 0: 3]
+        st = np.r_[P[0, 3], P[1, 3]]
+        
+        s = (np.linalg.norm(R1) + np.linalg.norm(R2)) / 2
+        r1 = R1 / np.linalg.norm(R1)
+        r2 = R2 / np.linalg.norm(R2)
+        r3 = np.cross(r1, r2)
+        R = np.vstack((r1, r2, r3))
+        
+        # Set R to closest orthogonal matrix to estimated rotation matrix
+        U, V = np.linalg.svd(R)[::2]
+        R = U.dot(V)
+        
+        # Determinant of R must = 1
+        if np.linalg.det(R) < 0:
+            U[2, :] = -U[2, :]
+            R = U.dot(V)
+        
+        # Remove scale from translations
+        t = st / s
+        
+        angle = rotMat2angle(R)
+        
+        return s, angle, st
+    
+    elif cam == 'perspective':
+        # Get inner parameters from projection matrix via RQ decomposition
+        K, R = rq(P[:, :3])
+        angle = rotMat2angle(R)
+        t = np.linalg.inv(K).dot(P[:, -1])
+        
+        return K, angle, t
+    
+def camWithShape(param, m, lm2d, lm3dInd, cam):
+    """
+    Minimize L2-norm of landmark fitting residuals and regularization terms for shape parameters
+    """
+    if cam == 'orthographic':
+        P = param[:8]
+        P = np.vstack((P.reshape((2, 4)), np.array([0, 0, 0, 1])))
+        idCoef = param[8: 8 + m.idEval.size]
+        expCoef = param[8 + m.idEval.size:]
+    
+    elif cam == 'perspective':
+        P = param[:12]
+        P = P.reshape((3, 4))
+        idCoef = param[12: 12 + m.idEval.size]
+        expCoef = param[12 + m.idEval.size:]
+    
+    # Convert to homogenous coordinates
+    numLandmarks = lm3dInd.size
+    
+    lm3d = generateFace(np.r_[idCoef, expCoef, np.zeros(6), 1], m, ind = lm3dInd).T
+    
+    xlan = np.c_[lm2d, np.ones(numLandmarks)]
+    Xlan = np.dot(np.c_[lm3d, np.ones(numLandmarks)], P.T)
+    
+    # Energy of landmark residuals
+    rlan = (Xlan - xlan).flatten('F')
+    Elan = np.dot(rlan, rlan)
+    
+    # Energy of shape regularization terms
+    Ereg = np.sum(idCoef ** 2 / m.idEval) + np.sum(expCoef ** 2 / m.expEval)
+    
+    return Elan + Ereg
+
 m = Bunch(np.load('./models/bfm2017.npz'))
 m.idEvec = m.idEvec[:, :, :80]
 m.idEval = m.idEval[:80]
@@ -835,352 +1096,157 @@ m.expEval = m.expEval[:76]
 m.texEvec = m.texEvec[:, :, :80]
 m.texEval = m.texEval[:80]
 
-#bfm2fw = np.array([0, 2, 3, 4, 5, 6, 7, 8, 13, 14, 16, 17, 18, 21, 22, 23, 24, 29, 30, 32, 33, 34, 37, 38, 39])
-#fw2bfm = np.array([7, 59, 55, 62, 49, 39, 65, 34, 33, 31, 32, 52, 50, 45, 41, 40, 30, 29, 27, 28, 46, 48, 44, 37, 38])
-
-targetLandmarkInds = np.array([0, 1, 2, 3, 8, 13, 14, 15, 16, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 61, 62, 63, 65, 66, 67, 68, 69])
-sourceLandmarkInds = np.array([16203, 16235, 16260, 16290, 27061, 22481, 22451, 22426, 22394, 8134, 8143, 8151, 8156, 6986, 7695, 8167, 8639, 9346, 2345, 4146, 5180, 6214, 4932, 4158, 10009, 11032, 12061, 13872, 12073, 11299, 5264, 6280, 7472, 8180, 8888, 10075, 11115, 9260, 8553, 8199, 7845, 7136, 7600, 8190, 8780, 8545, 8191, 7837, 4538, 11679])
-
-idCoef = np.zeros(m.idEval.shape)
-idCoef[0] = 1
-expCoef = np.zeros(m.expEval.shape)
-expCoef[0] = 1
-texCoef = np.zeros(m.texEval.shape)
-texCoef[0] = 1
-
-## Load 3D vertex indices of landmarks and find their vertices on the neutral face
-#landmarkInds3D = np.load('./data/landmarkInds3D.npy')
-#landmarkInds3D = np.r_[m.landmarkInd[bfm2fw], 16225, 16246, 16276, 22467, 22437, 22416]
-
-#fwlm = landmarkInds3D[np.r_[1, 3, 5, np.arange(7, 16)]]
-#bfmlm = landmarkInds3D[[25, 0, 30, 18, 17, 9, 8, 20, 4, 11, 2, 6]]
-
-#pose = 11
-#tester = 0
-
-# Gather 2D landmarks that correspond to manually chosen 3D landmarks
-#landmarkInds2D = np.array([0, 1, 4, 7, 10, 13, 14, 27, 29, 31, 33, 46, 49, 52, 55, 65])
-#landmarkInds2D = np.r_[fw2bfm, 1, 2, 3, 11, 12, 13]
-#landmarks = np.load('./data/landmarks2D.npy')[pose, tester, landmarkInds2D, :]
-#landmarkPixelInd = (landmarks * np.array([639, 479])).astype(int)
-#landmarkPixelInd[:, 1] = 479 - landmarkPixelInd[:, 1]
-
-## Get target 3D coordinates of depth maps at the 16 landmark locations
-#depth = np.load('./data/depthMaps.npy')[pose, tester, :, :]
-#
-#targetLandmark, nonZeroDepth = perspectiveTransformKinect(np.c_[landmarkPixelInd[:, 0], landmarkPixelInd[:, 1], depth[landmarkPixelInd[:, 1], landmarkPixelInd[:, 0]]])
-#
-##target = perspectiveTransformKinect(np.c_[np.tile(np.arange(640), 480), np.repeat(np.arange(480), 640), depth.flatten()])[0]
-#
-##plt.imshow(depth[pose, tester, :, :])
-#
-##plt.figure()
-##plt.scatter(targetLandmark[:, 0], targetLandmark[:, 1], s=1)
-##plt.figure()
-##plt.scatter(target[:, 0], target[:, 1], s=1)
-#
-## Initialize parameters
-#idCoef = np.zeros(idEval.shape)
-#idCoef[0] = 1
-#expCoef = np.zeros(expEval.shape)
-#expCoef[0] = 1
-
-# Do initial registration between the 16 corresponding landmarks on the depth map and the face model
-#source = idMean + np.tensordot(idEvec, idCoef, axes = 1) + np.tensordot(expEvec, expCoef, axes = 1)
-#rho = initialRegistration(source[:, landmarkInds3D[nonZeroDepth]], targetLandmark)
-#Rd = rotMat2angle(rho[:3])
-
-#P = np.r_[idCoef, expCoef, rho]
-#source = generateFace(P)
-
-# Nearest neighbors fitting from scikit-learn to form correspondence between target vertices and source vertices during optimization
-#NN = NearestNeighbors(n_neighbors = 1, metric = 'l1')
-#NN.fit(target)
-#NNparams = NN.get_params()
-#
-#cost = np.empty((100))
-#for i in range(100):
-#    print('Iteration %d' % i)
-#    dP, cost[i], target = gaussNewton(P, target, targetLandmark.T, landmarkInds3D[nonZeroDepth], NN)
-#    
-#    P += dP
-#
-#source = generateFace(P)
-
-#hist, bins = np.histogram(np.array(distances), bins=50)
-#width = 0.7 * (bins[1] - bins[0])
-#center = (bins[:-1] + bins[1:]) / 2
-#plt.bar(center, hist, align='center', width=width)
-#plt.show()
-
-#exportObj(target, fNameOut = 'target.obj') 
-#exportObj(targetLandmark, fNameOut = 'targetLandmark.obj')
-#exportObj(source, fNameIn = './mask2v2.obj', fNameOut = 'source.obj')
-
-# Direct linear transform / "Gold Standard Algorithm"
-# Normalize landmark coordinates; preconditioning
-numLandmarks = landmarkInds2D.size
-c2D = np.mean(landmarkPixelInd, axis = 0)
-uvCentered = landmarkPixelInd - c2D
-s2D = np.linalg.norm(uvCentered, axis = 1).mean()
-x = np.c_[uvCentered / s2D * np.sqrt(2), np.ones(numLandmarks)]
-
-c3D = np.mean(m.idMean[:, landmarkInds3D].T, axis = 0)
-xyzCentered = m.idMean[:, landmarkInds3D].T - c3D
-s3D = np.linalg.norm(xyzCentered, axis = 1).mean()
-X = np.c_[xyzCentered / s3D * np.sqrt(3), np.ones(numLandmarks)]
-
-Tinv = np.array([[s2D, 0, c2D[0]], [0, s2D, c2D[1]], [0, 0, 1]])
-U = np.linalg.inv([[s3D, 0, 0, c3D[0]], [0, s3D, 0, c3D[1]], [0, 0, s3D, c3D[2]], [0, 0, 0, 1]])
-
-# Create matrix for homogenous system of equations to solve for camera matrix
-A = np.empty((2*numLandmarks, 12))
-for row in range(numLandmarks):
-    A[row*2, :] = np.r_[X[row, :], 0, 0, 0, 0, -x[row, 0]*X[row, :]]
-    A[row*2 + 1, :] = np.r_[0, 0, 0, 0, -X[row, :], x[row, 1]*X[row, :]]
-
-# Take the SVD and take the last row of V' as the homogenous solution
-V = np.linalg.svd(A, full_matrices = 0)[-1]
-Pnorm = np.reshape(V[-1, :], (3, 4))
-
-# Further nonlinear LS to minimize error between 2D landmarks and 3D projections onto 2D plane.
-def cameraProjectionResidual(M, x, X):
+if __name__ == "__main__":
+    #bfm2fw = np.array([0, 2, 3, 4, 5, 6, 7, 8, 13, 14, 16, 17, 18, 21, 22, 23, 24, 29, 30, 32, 33, 34, 37, 38, 39])
+    #fw2bfm = np.array([7, 59, 55, 62, 49, 39, 65, 34, 33, 31, 32, 52, 50, 45, 41, 40, 30, 29, 27, 28, 46, 48, 44, 37, 38])
+    
+    targetLandmarkInds = np.array([0, 1, 2, 3, 8, 13, 14, 15, 16, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 61, 62, 63, 65, 66, 67, 68, 69])
+    sourceLandmarkInds = np.array([16203, 16235, 16260, 16290, 27061, 22481, 22451, 22426, 22394, 8134, 8143, 8151, 8156, 6986, 7695, 8167, 8639, 9346, 2345, 4146, 5180, 6214, 4932, 4158, 10009, 11032, 12061, 13872, 12073, 11299, 5264, 6280, 7472, 8180, 8888, 10075, 11115, 9260, 8553, 8199, 7845, 7136, 7600, 8190, 8780, 8545, 8191, 7837, 4538, 11679])
+    
+    idCoef = np.zeros(m.idEval.shape)
+    idCoef[0] = 1
+    expCoef = np.zeros(m.expEval.shape)
+    expCoef[0] = 1
+    texCoef = np.zeros(m.texEval.shape)
+    texCoef[0] = 1
+    
+    ## Load 3D vertex indices of landmarks and find their vertices on the neutral face
+    #landmarkInds3D = np.load('./data/landmarkInds3D.npy')
+    #landmarkInds3D = np.r_[m.landmarkInd[bfm2fw], 16225, 16246, 16276, 22467, 22437, 22416]
+    
+    #fwlm = landmarkInds3D[np.r_[1, 3, 5, np.arange(7, 16)]]
+    #bfmlm = landmarkInds3D[[25, 0, 30, 18, 17, 9, 8, 20, 4, 11, 2, 6]]
+    
+    #pose = 11
+    #tester = 0
+    
+    # Gather 2D landmarks that correspond to manually chosen 3D landmarks
+    #landmarkInds2D = np.array([0, 1, 4, 7, 10, 13, 14, 27, 29, 31, 33, 46, 49, 52, 55, 65])
+    #landmarkInds2D = np.r_[fw2bfm, 1, 2, 3, 11, 12, 13]
+    #landmarks = np.load('./data/landmarks2D.npy')[pose, tester, landmarkInds2D, :]
+    #landmarkPixelInd = (landmarks * np.array([639, 479])).astype(int)
+    #landmarkPixelInd[:, 1] = 479 - landmarkPixelInd[:, 1]
+    
+    ## Get target 3D coordinates of depth maps at the 16 landmark locations
+    #depth = np.load('./data/depthMaps.npy')[pose, tester, :, :]
+    #
+    #targetLandmark, nonZeroDepth = perspectiveTransformKinect(np.c_[landmarkPixelInd[:, 0], landmarkPixelInd[:, 1], depth[landmarkPixelInd[:, 1], landmarkPixelInd[:, 0]]])
+    #
+    ##target = perspectiveTransformKinect(np.c_[np.tile(np.arange(640), 480), np.repeat(np.arange(480), 640), depth.flatten()])[0]
+    #
+    ##plt.imshow(depth[pose, tester, :, :])
+    #
+    ##plt.figure()
+    ##plt.scatter(targetLandmark[:, 0], targetLandmark[:, 1], s=1)
+    ##plt.figure()
+    ##plt.scatter(target[:, 0], target[:, 1], s=1)
+    #
+    ## Initialize parameters
+    #idCoef = np.zeros(idEval.shape)
+    #idCoef[0] = 1
+    #expCoef = np.zeros(expEval.shape)
+    #expCoef[0] = 1
+    
+    # Do initial registration between the 16 corresponding landmarks on the depth map and the face model
+    #source = idMean + np.tensordot(idEvec, idCoef, axes = 1) + np.tensordot(expEvec, expCoef, axes = 1)
+    #rho = initialRegistration(source[:, landmarkInds3D[nonZeroDepth]], targetLandmark)
+    #Rd = rotMat2angle(rho[:3])
+    
+    #P = np.r_[idCoef, expCoef, rho]
+    #source = generateFace(P)
+    
+    # Nearest neighbors fitting from scikit-learn to form correspondence between target vertices and source vertices during optimization
+    #NN = NearestNeighbors(n_neighbors = 1, metric = 'l1')
+    #NN.fit(target)
+    #NNparams = NN.get_params()
+    #
+    #cost = np.empty((100))
+    #for i in range(100):
+    #    print('Iteration %d' % i)
+    #    dP, cost[i], target = gaussNewton(P, target, targetLandmark.T, landmarkInds3D[nonZeroDepth], NN)
+    #    
+    #    P += dP
+    #
+    #source = generateFace(P)
+    
+    #hist, bins = np.histogram(np.array(distances), bins=50)
+    #width = 0.7 * (bins[1] - bins[0])
+    #center = (bins[:-1] + bins[1:]) / 2
+    #plt.bar(center, hist, align='center', width=width)
+    #plt.show()
+    
+    #exportObj(target, fNameOut = 'target.obj') 
+    #exportObj(targetLandmark, fNameOut = 'targetLandmark.obj')
+    #exportObj(source, fNameIn = './mask2v2.obj', fNameOut = 'source.obj')
+    
+    
+    #reconstImg = np.zeros(img.shape)
+    #reconstImg[:, :, 0].flat[np.ravel_multi_index(vertex2pixel[zBuffer, ::-1].T, img.shape[:2])] = texture[0, zBuffer]
+    #reconstImg[:, :, 1].flat[np.ravel_multi_index(vertex2pixel[zBuffer, ::-1].T, img.shape[:2])] = texture[1, zBuffer]
+    #reconstImg[:, :, 2].flat[np.ravel_multi_index(vertex2pixel[zBuffer, ::-1].T, img.shape[:2])] = texture[2, zBuffer]
+    #plt.figure()
+    #plt.imshow(reconstImg)
+    
+    # Plot the projected 3D model on top of the input RGB image
+    #fName = dirName + 'Tester_' + str(tester+1) + '/TrainingPose/pose_' + str(pose) + '.png'
+    #img = mpimg.imread(fName)
+    #plt.figure()
+    #plt.imshow(img)
+    #plt.hold(True)
+    #plt.scatter(fitting[0, :], fitting[1, :], s = 0.1, c = 'g')
+    #plt.hold(True)
+    #plt.scatter(fitting[0, landmarkInds3D], fitting[1, landmarkInds3D], s = 3, c = 'b')
+    #plt.hold(True)
+    #plt.scatter(landmarkPixelInd[:, 0], landmarkPixelInd[:, 1], s = 2, c = 'r')
+    
     """
-    min_{P} sum_{i} || x_i - PX_i ||^2
+    
     """
-    return x.flatten() - np.dot(X, M.reshape((3, 4)).T).flatten()
-
-Pgold = least_squares(cameraProjectionResidual, Pnorm.flatten(), args = (x, X))
-
-# Denormalize P
-P = np.dot(Tinv, Pgold.x.reshape(3, 4)).dot(U)
-
-# Even more minimization with projection matrix to get initial shape parameters
-def camWithShape(param, x, m, lm2d, lm3d):
-    """
-    Minimize L2-norm of landmark fitting residuals and regularization terms for shape parameters
-    """
-    P = param[:12]
-    P = P.reshape((3, 4))
-    idCoef = param[12: 12 + m.idEval.size]
-    expCoef = param[12 + m.idEval.size:]
+    ## Get triangle faces
+    #f = importObj('./masks2v2/', shape = 0, dataToImport = ['f'])[0][0, :, :] - 1
+    #f = np.r_[f[:, [0, 1, 2]], f[:, [0, 2, 3]]]
     
-    # Convert to homogenous coordinates
-    Lmu = np.r_[m.idMean[:, lm3d], np.ones((1, lm3d.size))]
-    Lid = np.concatenate((m.idEvec[:, lm3d, :], np.zeros((1, lm3d.size, idCoef.size))), axis = 0)
-    Lexp = np.concatenate((m.expEvec[:, lm3d, :], np.zeros((1, lm3d.size, expCoef.size))), axis = 0)
-    xlan = np.c_[lm2d, np.ones(lm3d.size)]
+    #X = m.idMean
+    #X = R.dot(m.idMean + np.tensordot(m.idEvec, idCoef, axes = 1) + np.tensordot(m.expEvec, expCoef, axes = 1)) + t[:, np.newaxis]
+    #normals = calcNormals(R, m, idCoef, expCoef)
+    #shBases = shBasis(texture, normals)
     
-    # Energy of landmark residuals
-    Xlan = np.dot(P, Lmu + np.tensordot(Lid, idCoef, axes = 1) + np.tensordot(Lexp, expCoef, axes = 1))
-    Elan = np.linalg.norm(xlan - Xlan.T, axis = 1).sum()
+    #exportObj(X.T, c = shb[:, :, 8].T, f = m.face, fNameOut = 'sh9')
     
-    # Energy of shape regularization terms
-    Ereg = np.sum(idCoef ** 2 / m.idEval) + np.sum(expCoef ** 2 / m.expEval)
+    # Load 3D landmarks and find their vertex indices
+    #v = importObj('./mask2v2.obj', shape = 0, dataToImport = ['v'])[0]
+    #landmarks3D = importObj('./landmarks.obj', shape = 0, dataToImport = ['v'])[0]
+    #landmarks3D = landmarks3D[[7, 4, 3, 2, 11, 12, 15, 5, 6, 13, 14, 0, 10, 9, 8, 1]]
+    #landmarkInds3D = [np.where(np.isin(v, landmark).any(axis = 1))[0][0] for landmark in landmarks3D]
+    #np.save('./landmarkInds3D', landmarkInds3D)
     
-    return Elan + Ereg
-
-param = minimize(camWithShape, np.r_[P.flatten(), idCoef, expCoef], args = (x, m, landmarkPixelInd, landmarkInds3D))
-
-# Separate variates in parameter vector
-P = param.x[:12].reshape((3, 4))
-idCoef = param.x[12: 12 + m.idEval.size]
-expCoef = param.x[12 + m.idEval.size:]
-
-# Get inner parameters from projection matrix via RQ decomposition
-K, R = rq(P[:, :3])
-angles = rotMat2angle(R)
-t = np.linalg.inv(K).dot(P[:, -1])
-
-# Project 3D model into 2D plane
-shape = m.idMean + np.tensordot(m.idEvec, idCoef, axes = 1) + np.tensordot(m.expEvec, expCoef, axes = 1)
-modelBeforeProj = R.dot(shape) + t[:, np.newaxis]
-fitting = K.dot(modelBeforeProj)
-
-# Plot the projected 3D model on top of the input RGB image
-fName = 'data/TrainingPose/pose_' + str(pose) + '.png'
-img = mpimg.imread(fName)
-plt.imshow(img)
-plt.hold(True)
-plt.scatter(fitting[0, :], fitting[1, :], s = 0.1, c = 'g')
-plt.hold(True)
-plt.scatter(fitting[0, landmarkInds3D], fitting[1, landmarkInds3D], s = 3, c = 'b')
-plt.hold(True)
-plt.scatter(landmarkPixelInd[:, 0], landmarkPixelInd[:, 1], s = 2, c = 'r')
-
-# Z-buffer: smaller z is closer to image plane (e.g. the nose should have relatively small z values)
-vertex2pixel = fitting[:2, :].T.astype(int)
-pixelInd, ind, counts = np.unique(vertex2pixel, return_index = True, return_counts = True, axis = 0)
-zBuffer = np.empty(ind.size, dtype = int)
-for i in range(ind.size):
-    if counts[i] == 1:
-        zBuffer[i] = ind[i]
-    else:
-        inds = np.where((vertex2pixel[:, 0] == pixelInd[i, 0]) & (vertex2pixel[:, 1] == pixelInd[i, 1]))[0]
-        zBuffer[i] = inds[np.argmin(modelBeforeProj[2, inds])]
-
-#mask = np.zeros(img.shape[:2], dtype = bool)
-#mask.flat[np.ravel_multi_index(vertex2pixel[zBuffer, ::-1].T, img.shape[:2])] = True
-#plt.figure()
-#plt.imshow(mask)
-"""
-"""
-def textureCost(texCoef, x, mask, m):
-    """
-    Energy formulation for fitting texture
-    """
-    # Photo-consistency
-    Xcol = (m.texMean[:, mask] + np.tensordot(m.texEvec[:, mask, :], texCoef, axes = 1)).T
+    #fig, ax = plt.subplots()
+    #x = landmarks3D[:, 0]
+    #y = landmarks3D[:, 1]
+    #ax.scatter(x, y, s = 1, picker = True)
+    #fig.canvas.mpl_connect('pick_event', onpick3)
     
-    r = (Xcol - x).flatten()
-    
-    Ecol = np.dot(r, r) / mask.size
-    
-    # Statistical regularization
-    Ereg = np.sum(texCoef ** 2 / m.texEval)
-    
-    return Ecol + Ereg
-
-def textureGrad(texCoef, x, mask, m):
-    """
-    Jacobian for texture energy
-    """
-    Xcol = (m.texMean[:, mask] + np.tensordot(m.texEvec[:, mask, :], texCoef, axes = 1)).T
-    
-    r = (Xcol - x).flatten()
-    
-    # Jacobian
-    J = m.texEvec[:, mask, :].reshape((m.texMean[:, mask].size, m.texEval.size), order = 'F')
-    
-    return 2 * (np.dot(J.T, r) / mask.size + texCoef / m.texEval)
-
-def fitter(param, x, vis, m, lm2d, lm3d):
-    """
-    Energy formulation for fitting 3D face model to 2D image
-    """
-    K = np.reshape(param[:6], (2, 3))
-    angle = param[6: 9]
-    R = rotMat2angle(angle)
-    t = param[9: 12]
-    shCoef = param[12: 39]
-    idCoef = param[39: 39 + m.idEval.size]
-    expCoef = param[39 + m.idEval.size: 39 + m.idEval.size + m.expEval.size]
-    texCoef = param[39 + m.idEval.size + m.expEval.size:]
-    
-    # Photo-consistency
-    shape = R.dot(m.idMean + np.tensordot(m.idEvec, idCoef, axes = 1) + np.tensordot(m.expEvec, expCoef, axes = 1)) + t[:, np.newaxis]
-    
-    texture = m.texMean[:, vis] + np.tensordot(m.texEvec[:, vis, :], texCoef, axes = 1)
-    
-    normals = calcNormals(R, m, idCoef, expCoef)
-    shBases = shBasis(texture, normals)
-    
-    texture[0, :] = np.tensordot(shBases[0, :, :], shCoef[:9], axes = 1)
-    texture[1, :] = np.tensordot(shBases[1, :, :], shCoef[9: 18], axes = 1)
-    texture[2, :] = np.tensordot(shBases[2, :, :], shCoef[18: 27], axes = 1)
-    
-    Ecol = np.linalg.norm(x - texture[:, ind].T, axis = 1).sum() / ind.size
-    
-    # Feature alignment (landmarks)
-    Xlan = K.dot(R.dot(m.idMean[:, lm3d] + np.tensordot(m.idEvec[:, lm3d, :], idCoef, axes = 1) + np.tensordot(m.expEvec[:, lm3d, :], expCoef, axes = 1)) + t[:, np.newaxis])
-    Elan = np.linalg.norm(lm2d - Xlan.T, axis = 1).sum() / lm3d.size
-    
-    # Statistical regularization
-    Ereg = np.sum(idCoef ** 2 / m.idEval) + np.sum(expCoef ** 2 / m.expEval) + np.sum(texCoef ** 2 / m.texEval)
-    
-    return Ecol + 10*Elan + Ereg
-
-x = np.reshape(img, (np.prod(img.shape[:2]), 3))
-x = x[np.ravel_multi_index(vertex2pixel[zBuffer, ::-1].T, img.shape[:2]), :]
-param2 = minimize(textureCost, texCoef, args = (x, zBuffer, m), method = 'cg', jac = textureGrad)
-from scipy.optimize import check_grad
-check_grad(textureCost, textureGrad, texCoef, x, zBuffer, m)
-#param2 = minimize(fitter, np.r_[K[:2, :].flatten(), angles, t, idCoef, expCoef, texCoef], args = (x, m, landmarkPixelInd, landmarkInds3D))
-
-texCoef = param2['x']
-#K2 = np.reshape(param2.x[:6], (2, 3))
-#angles2 = param2.x[6: 9]
-#R2 = rotMat2angle(angles2)
-#t2 = param2.x[9: 12]
-#idCoef2 = param2.x[12: 12 + m.idEval.size]
-#expCoef2 = param2.x[12 + m.idEval.size: 12 + m.idEval.size + m.expEval.size]
-#texCoef = param2.x[12 + m.idEval.size + m.expEval.size:]
-
-# Project 3D model into 2D plane
-#fitting = K2.dot(R2.dot(m.idMean + np.tensordot(m.idEvec, idCoef2, axes = 1) + np.tensordot(m.expEvec, expCoef2, axes = 1)) + t2[:, np.newaxis])
-texture = m.texMean + np.tensordot(m.texEvec, texCoef, axes = 1)
-#exportObj(shape.T, c = texture.T, f = m.face, fNameOut = 'texTest')
-tmesh = mlab.triangular_mesh(shape[0, :], shape[1, :], shape[2, :], m.face, scalars = np.arange(m.numVertices))
-tmesh.module_manager.scalar_lut_manager.lut.table = np.c_[(texture.T * 255), 255 * np.ones(m.numVertices)].astype(np.uint8)
-mlab.draw()
-
-#reconstImg = np.zeros(img.shape)
-#reconstImg[:, :, 0].flat[np.ravel_multi_index(vertex2pixel[zBuffer, ::-1].T, img.shape[:2])] = texture[0, zBuffer]
-#reconstImg[:, :, 1].flat[np.ravel_multi_index(vertex2pixel[zBuffer, ::-1].T, img.shape[:2])] = texture[1, zBuffer]
-#reconstImg[:, :, 2].flat[np.ravel_multi_index(vertex2pixel[zBuffer, ::-1].T, img.shape[:2])] = texture[2, zBuffer]
-#plt.figure()
-#plt.imshow(reconstImg)
-
-# Plot the projected 3D model on top of the input RGB image
-#fName = dirName + 'Tester_' + str(tester+1) + '/TrainingPose/pose_' + str(pose) + '.png'
-#img = mpimg.imread(fName)
-#plt.figure()
-#plt.imshow(img)
-#plt.hold(True)
-#plt.scatter(fitting[0, :], fitting[1, :], s = 0.1, c = 'g')
-#plt.hold(True)
-#plt.scatter(fitting[0, landmarkInds3D], fitting[1, landmarkInds3D], s = 3, c = 'b')
-#plt.hold(True)
-#plt.scatter(landmarkPixelInd[:, 0], landmarkPixelInd[:, 1], s = 2, c = 'r')
-
-"""
-
-"""
-## Get triangle faces
-#f = importObj('./masks2v2/', shape = 0, dataToImport = ['f'])[0][0, :, :] - 1
-#f = np.r_[f[:, [0, 1, 2]], f[:, [0, 2, 3]]]
-
-#X = m.idMean
-#X = R.dot(m.idMean + np.tensordot(m.idEvec, idCoef, axes = 1) + np.tensordot(m.expEvec, expCoef, axes = 1)) + t[:, np.newaxis]
-#normals = calcNormals(R, m, idCoef, expCoef)
-#shBases = shBasis(texture, normals)
-
-#exportObj(X.T, c = shb[:, :, 8].T, f = m.face, fNameOut = 'sh9')
-
-# Load 3D landmarks and find their vertex indices
-#v = importObj('./mask2v2.obj', shape = 0, dataToImport = ['v'])[0]
-#landmarks3D = importObj('./landmarks.obj', shape = 0, dataToImport = ['v'])[0]
-#landmarks3D = landmarks3D[[7, 4, 3, 2, 11, 12, 15, 5, 6, 13, 14, 0, 10, 9, 8, 1]]
-#landmarkInds3D = [np.where(np.isin(v, landmark).any(axis = 1))[0][0] for landmark in landmarks3D]
-#np.save('./landmarkInds3D', landmarkInds3D)
-
-#fig, ax = plt.subplots()
-#x = landmarks3D[:, 0]
-#y = landmarks3D[:, 1]
-#ax.scatter(x, y, s = 1, picker = True)
-#fig.canvas.mpl_connect('pick_event', onpick3)
-
-## Confirm that 16 2D landmarks are in correspondence across poses and testers
-#pose = 0
-#tester = 0
-#landmarks = np.load('./data/landmarks2D.npy')[pose, tester, :, :]
-#landmarkPixelInd = (landmarks * np.array([639, 479])).astype(int)
-#landmarkPixelInd[:, 1] = 479 - landmarkPixelInd[:, 1]
-#fName = dirName + 'Tester_' + str(tester+1) + '/TrainingPose/pose_' + str(pose) + '.png'
-#img = mpimg.imread(fName)
-#
-##bfm2fw = [0, 2, 3, 4, 5, 6, 7, 8, 9, 11, 13, 14, 16, 17, 18, 21, 22, 23, 24, 25, 27, 29, 30, 32, 33, 34, 37, 38, 39]
-##fw2bfm = [7, 59, 55, 62, 49, 39, 65, 34, 15, 18, 33, 31, 32, 52, 50, 45, 41, 40, 30, 21, 24, 29, 27, 28, 46, 48, 44, 37, 38]
-#
-##plt.scatter(x*640, (1-y)*480, s = 1)
-##x = landmarkPixelInd[fw2bfm, 0]
-##y = landmarkPixelInd[fw2bfm, 1]
-#x = landmarkPixelInd[:, 0]
-#y = landmarkPixelInd[:, 1]
-#
-#fig, ax = plt.subplots()
-#plt.imshow(img)
-##plt.imshow(depth[pose, tester, :, :].astype(float))
-#plt.hold(True)
-#ax.scatter(x, y, s = 1, c = 'r', picker = True)
-#fig.canvas.mpl_connect('pick_event', onpick3)
+    ## Confirm that 16 2D landmarks are in correspondence across poses and testers
+    #pose = 0
+    #tester = 0
+    #landmarks = np.load('./data/landmarks2D.npy')[pose, tester, :, :]
+    #landmarkPixelInd = (landmarks * np.array([639, 479])).astype(int)
+    #landmarkPixelInd[:, 1] = 479 - landmarkPixelInd[:, 1]
+    #fName = dirName + 'Tester_' + str(tester+1) + '/TrainingPose/pose_' + str(pose) + '.png'
+    #img = mpimg.imread(fName)
+    #
+    ##bfm2fw = [0, 2, 3, 4, 5, 6, 7, 8, 9, 11, 13, 14, 16, 17, 18, 21, 22, 23, 24, 25, 27, 29, 30, 32, 33, 34, 37, 38, 39]
+    ##fw2bfm = [7, 59, 55, 62, 49, 39, 65, 34, 15, 18, 33, 31, 32, 52, 50, 45, 41, 40, 30, 21, 24, 29, 27, 28, 46, 48, 44, 37, 38]
+    #
+    ##plt.scatter(x*640, (1-y)*480, s = 1)
+    ##x = landmarkPixelInd[fw2bfm, 0]
+    ##y = landmarkPixelInd[fw2bfm, 1]
+    #x = landmarkPixelInd[:, 0]
+    #y = landmarkPixelInd[:, 1]
+    #
+    #fig, ax = plt.subplots()
+    #plt.imshow(img)
+    ##plt.imshow(depth[pose, tester, :, :].astype(float))
+    #plt.hold(True)
+    #ax.scatter(x, y, s = 1, c = 'r', picker = True)
+    #fig.canvas.mpl_connect('pick_event', onpick3)

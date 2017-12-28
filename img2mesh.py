@@ -202,23 +202,219 @@ def initialRegistration(A, B):
     
     return np.r_[angle, t, s]
 
-def initialShape(P, target, m, sourceLandmarkInds):
-    # Shape eigenvector coefficients
-    idCoef = P[: m.idEvec.shape[2]]
-    expCoef = P[m.idEvec.shape[2]: m.idEvec.shape[2] + m.expEvec.shape[2]]
+def orthographicEst(lm2D, lm3D):
+    numLandmarks = lm2D.shape[0]
     
-    # Rotation Euler angles, translation vector, scaling factor
-    angles = P[m.idEvec.shape[2] + m.expEvec.shape[2]:][:3]
-    R = rotMat2angle(angles)
-    t = P[m.idEvec.shape[2] + m.expEvec.shape[2]:][3: 6]
-    s = P[m.idEvec.shape[2] + m.expEvec.shape[2]:][6]
+    # Normalize landmark coordinates; preconditioning
+    c2D = np.mean(lm2D, axis = 0)
+    uvCentered = lm2D - c2D
+    s2D = np.linalg.norm(uvCentered, axis = 1).mean()
+    x = uvCentered / s2D * np.sqrt(2)
     
-    # Landmark fitting cost
-    source = s*R.dot(m.idMean[:, sourceLandmarkInds] + np.tensordot(m.idEvec[:, sourceLandmarkInds, :], idCoef, axes = 1) + np.tensordot(m.expEvec[:, sourceLandmarkInds, :], expCoef, axes = 1)) + t[:, np.newaxis]
+    c3D = np.mean(lm3D, axis = 0)
+    xyzCentered = lm3D - c3D
+    s3D = np.linalg.norm(xyzCentered, axis = 1).mean()
+    X = xyzCentered / s3D * np.sqrt(3)
     
-    Elan = np.linalg.norm(target - source.T, axis = 1).sum() / sourceLandmarkInds.size
+    # Similarity transformations for normalization
+    Tinv = np.array([[s2D, 0, c2D[0]], [0, s2D, c2D[1]], [0, 0, 1]])
+    U = np.linalg.inv([[s3D, 0, 0, c3D[0]], [0, s3D, 0, c3D[1]], [0, 0, s3D, c3D[2]], [0, 0, 0, 1]])
+
+    # Build linear system of equations in 8 unknowns of projection matrix
+    A = np.zeros((2 * numLandmarks, 8))
     
-    # Regularization cost
+    A[0: 2*numLandmarks - 1: 2, :3] = X
+    A[0: 2*numLandmarks - 1: 2, 3] = 1
+    
+    A[1: 2*numLandmarks: 2, 4: 7] = X
+    A[1: 2*numLandmarks: 2, 7] = 1
+    
+    # Solve linear system and de-normalize
+    p8 = np.linalg.lstsq(A, x.flatten())[0]
+    
+    Pnorm = np.r_[p8, 0, 0, 0, 1].reshape(3, 4)
+    P = Tinv.dot(Pnorm).dot(U)
+    
+    return P[:2, :]
+
+def perspectiveEst(lm2D, lm3D):
+    # Direct linear transform / "Gold Standard Algorithm"
+    # Normalize landmark coordinates; preconditioning
+    numLandmarks = lm2D.shape[0]
+    
+    c2D = np.mean(lm2D, axis = 0)
+    uvCentered = lm2D - c2D
+    s2D = np.linalg.norm(uvCentered, axis = 1).mean()
+    x = np.c_[uvCentered / s2D * np.sqrt(2), np.ones(numLandmarks)]
+    
+    c3D = np.mean(lm3D, axis = 0)
+    xyzCentered = lm3D - c3D
+    s3D = np.linalg.norm(xyzCentered, axis = 1).mean()
+    X = np.c_[xyzCentered / s3D * np.sqrt(3), np.ones(numLandmarks)]
+    
+    # Similarity transformations for normalization
+    Tinv = np.array([[s2D, 0, c2D[0]], [0, s2D, c2D[1]], [0, 0, 1]])
+    U = np.linalg.inv([[s3D, 0, 0, c3D[0]], [0, s3D, 0, c3D[1]], [0, 0, s3D, c3D[2]], [0, 0, 0, 1]])
+    
+    # Create matrix for homogenous system of equations to solve for camera matrix
+    A = np.zeros((2 * numLandmarks, 12))
+    
+    A[0: 2*numLandmarks - 1: 2, 0: 4] = X
+    A[0: 2*numLandmarks - 1: 2, 8:] = -x[:, 0, np.newaxis] * X
+    
+    A[1: 2*numLandmarks: 2, 4: 8] = -X
+    A[1: 2*numLandmarks: 2, 8:] = x[:, 1, np.newaxis] * X
+    
+    # Take the SVD and take the last row of V', which corresponds to the lowest eigenvalue, as the homogenous solution
+    V = np.linalg.svd(A, full_matrices = 0)[-1]
+    Pnorm = np.reshape(V[-1, :], (3, 4))
+    
+    # Further nonlinear LS to minimize error between 2D landmarks and 3D projections onto 2D plane.
+    def cameraProjectionResidual(M, x, X):
+        """
+        min_{P} sum_{i} || x_i - PX_i ||^2
+        """
+        return x.flatten() - np.dot(X, M.reshape((3, 4)).T).flatten()
+    
+    Pgold = least_squares(cameraProjectionResidual, Pnorm.flatten(), args = (x, X))
+    
+    # Denormalize P
+    P = Tinv.dot(Pgold.x.reshape(3, 4)).dot(U)
+    
+    return P
+
+def estCamMat(lm2D, lm3D, cam = 'perspective'):
+    """
+    Direct linear transform / "Gold Standard Algorithm" to estimate camera matrix from 2D-3D landmark correspondences. The input 2D and 3D landmark NumPy arrays have XY and XYZ coordinates in each row, respectively. For an orthographic camera, the algebraic and geometric errors are equivalent, so there is no need to do the least squares step at the end. The orthographic camera returns a 2x4 camera matrix, since the last row is just [0, 0, 0, 1].
+    """
+    # Normalize landmark coordinates; preconditioning
+    numLandmarks = lm2D.shape[0]
+    
+    c2D = np.mean(lm2D, axis = 0)
+    uvCentered = lm2D - c2D
+    s2D = np.linalg.norm(uvCentered, axis = 1).mean()
+    x = np.c_[uvCentered / s2D * np.sqrt(2), np.ones(numLandmarks)]
+    
+    c3D = np.mean(lm3D, axis = 0)
+    xyzCentered = lm3D - c3D
+    s3D = np.linalg.norm(xyzCentered, axis = 1).mean()
+    X = np.c_[xyzCentered / s3D * np.sqrt(3), np.ones(numLandmarks)]
+    
+    # Similarity transformations for normalization
+    Tinv = np.array([[s2D, 0, c2D[0]], [0, s2D, c2D[1]], [0, 0, 1]])
+    U = np.linalg.inv([[s3D, 0, 0, c3D[0]], [0, s3D, 0, c3D[1]], [0, 0, s3D, c3D[2]], [0, 0, 0, 1]])
+    
+    if cam == 'orthographic':
+        # Build linear system of equations in 8 unknowns of projection matrix
+        A = np.zeros((2 * numLandmarks, 8))
+        
+        A[0: 2*numLandmarks - 1: 2, :4] = X
+        A[1: 2*numLandmarks: 2, 4:] = X
+        
+        # Solve linear system and de-normalize
+        p8 = np.linalg.lstsq(A, x.flatten())[0]
+        
+        Pnorm = np.r_[p8, 0, 0, 0, 1].reshape(3, 4)
+        P = Tinv.dot(Pnorm).dot(U)
+        
+        return P[:2, :]
+    
+    elif cam == 'perspective':
+        # Matrix for homogenous system of equations to solve for camera matrix
+        A = np.zeros((2 * numLandmarks, 12))
+        
+        A[0: 2*numLandmarks - 1: 2, 0: 4] = X
+        A[0: 2*numLandmarks - 1: 2, 8:] = -x[:, 0, np.newaxis] * X
+        
+        A[1: 2*numLandmarks: 2, 4: 8] = -X
+        A[1: 2*numLandmarks: 2, 8:] = x[:, 1, np.newaxis] * X
+        
+        # Take the SVD and take the last row of V', which corresponds to the lowest eigenvalue, as the homogenous solution
+        V = np.linalg.svd(A, full_matrices = 0)[-1]
+        Pnorm = np.reshape(V[-1, :], (3, 4))
+        
+        # Further nonlinear LS to minimize error between 2D landmarks and 3D projections onto 2D plane.
+        def cameraProjectionResidual(M, x, X):
+            """
+            min_{P} sum_{i} || x_i - PX_i ||^2
+            """
+            return x.flatten() - np.dot(X, M.reshape((3, 4)).T).flatten()
+        
+        Pgold = least_squares(cameraProjectionResidual, Pnorm.flatten(), args = (x, X))
+        
+        # Denormalize P
+        P = Tinv.dot(Pgold.x.reshape(3, 4)).dot(U)
+        
+        return P
+
+def splitCamMat(P, cam = 'perspective'):
+    """
+    """
+    if cam == 'orthographic':
+        # Extract params from orthographic projection matrix
+        R1 = P[0, 0: 3]
+        R2 = P[1, 0: 3]
+        st = np.r_[P[0, 3], P[1, 3]]
+        
+        s = (np.linalg.norm(R1) + np.linalg.norm(R2)) / 2
+        r1 = R1 / np.linalg.norm(R1)
+        r2 = R2 / np.linalg.norm(R2)
+        r3 = np.cross(r1, r2)
+        R = np.vstack((r1, r2, r3))
+        
+        # Set R to closest orthogonal matrix to estimated rotation matrix
+        U, V = np.linalg.svd(R)[::2]
+        R = U.dot(V)
+        
+        # Determinant of R must = 1
+        if np.linalg.det(R) < 0:
+            U[2, :] = -U[2, :]
+            R = U.dot(V)
+        
+        # Remove scale from translations
+        t = st / s
+        
+        angle = rotMat2angle(R)
+        
+        return s, angle, st
+    
+    elif cam == 'perspective':
+        # Get inner parameters from projection matrix via RQ decomposition
+        K, R = rq(P[:, :3])
+        angle = rotMat2angle(R)
+        t = np.linalg.inv(K).dot(P[:, -1])
+        
+        return K, angle, t
+    
+def camWithShape(param, m, lm2d, lm3dInd, cam):
+    """
+    Minimize L2-norm of landmark fitting residuals and regularization terms for shape parameters
+    """
+    if cam == 'orthographic':
+        P = param[:8]
+        P = np.vstack((P.reshape((2, 4)), np.array([0, 0, 0, 1])))
+        idCoef = param[8: 8 + m.idEval.size]
+        expCoef = param[8 + m.idEval.size:]
+    
+    elif cam == 'perspective':
+        P = param[:12]
+        P = P.reshape((3, 4))
+        idCoef = param[12: 12 + m.idEval.size]
+        expCoef = param[12 + m.idEval.size:]
+    
+    # Convert to homogenous coordinates
+    numLandmarks = lm3dInd.size
+    
+    lm3d = generateFace(np.r_[idCoef, expCoef, np.zeros(6), 1], m, ind = lm3dInd).T
+    
+    xlan = np.c_[lm2d, np.ones(numLandmarks)]
+    Xlan = np.dot(np.c_[lm3d, np.ones(numLandmarks)], P.T)
+    
+    # Energy of landmark residuals
+    rlan = (Xlan - xlan).flatten('F')
+    Elan = np.dot(rlan, rlan)
+    
+    # Energy of shape regularization terms
     Ereg = np.sum(idCoef ** 2 / m.idEval) + np.sum(expCoef ** 2 / m.expEval)
     
     return Elan + Ereg
@@ -244,168 +440,6 @@ def dR_dphi(angles):
     psi, theta, phi = angles
     return np.array([[-np.cos(theta)*np.sin(phi), -np.cos(psi)*np.cos(phi) - np.sin(psi)*np.sin(theta)*np.sin(phi), np.sin(psi)*np.cos(phi) - np.cos(psi)*np.sin(theta)*np.sin(phi)], [np.cos(theta)*np.cos(phi), -np.cos(psi)*np.sin(phi) + np.sin(psi)*np.sin(theta)*np.cos(phi), np.sin(psi)*np.sin(phi) + np.cos(psi)*np.sin(theta)*np.cos(phi)], [0, 0, 0]])
 
-def shapeCost(P, m, target, targetLandmarks, sourceLandmarkInds, NN):
-    # Shape eigenvector coefficients
-    idCoef = P[: m.idEval.size]
-    expCoef = P[m.idEval.size: m.idEval.size + m.expEval.size]
-    
-    # Rotation matrix, translation vector, scaling factor
-    R = rotMat2angle(P[m.idEval.size + m.expEval.size:][:3])
-    t = P[m.idEval.size + m.expEval.size:][3: 6]
-    s = P[m.idEval.size + m.expEval.size:][6]
-    
-    # Transpose if necessary
-    if targetLandmarks.shape[0] != 3:
-        targetLandmarks = targetLandmarks.T
-    
-    # After rigid transformation and scaling
-    source = s*np.dot(R, m.idMean + np.tensordot(m.idEvec, idCoef, axes = 1) + np.tensordot(m.expEvec, expCoef, axes = 1)) + t[:, np.newaxis]
-    
-    # Find the nearest neighbors of the target to the source vertices
-    distance, ind = NN.kneighbors(source.T)
-    targetNN = target[ind.squeeze(axis = 1), :].T
-    
-    # Calculate resisduals
-    rver = (source - targetNN).flatten('F')
-    rlan = (source[:, sourceLandmarkInds] - targetLandmarks).flatten('F')
-    
-    # Calculate costs
-    Ever = np.dot(rver, rver) / m.numVertices
-    Elan = np.dot(rlan, rlan) / sourceLandmarkInds.size
-    Ereg = np.sum(idCoef ** 2 / m.idEval) + np.sum(expCoef ** 2 / m.expEval)
-    
-    return Ever + 2 * Elan + Ereg
-
-def shapeGrad(P, m, target, targetLandmarks, sourceLandmarkInds, NN):
-    # Shape eigenvector coefficients
-    idCoef = P[: m.idEval.size]
-    expCoef = P[m.idEval.size: m.idEval.size + m.expEval.size]
-    
-    # Rotation Euler angles, translation vector, scaling factor
-    angles = P[m.idEval.size + m.expEval.size:][:3]
-    R = rotMat2angle(angles)
-    t = P[m.idEval.size + m.expEval.size:][3: 6]
-    s = P[m.idEval.size + m.expEval.size:][6]
-    
-    # Transpose if necessary
-    if targetLandmarks.shape[0] != 3:
-        targetLandmarks = targetLandmarks.T
-    
-    # The eigenmodel, before rigid transformation and scaling
-    model = m.idMean + np.tensordot(m.idEvec, idCoef, axes = 1) + np.tensordot(m.expEvec, expCoef, axes = 1)
-    
-    # After rigid transformation and scaling
-    source = s*np.dot(R, model) + t[:, np.newaxis]
-    
-    # Find the nearest neighbors of the target to the source vertices
-    distance, ind = NN.kneighbors(source.T)
-    targetNN = target[ind.squeeze(axis = 1), :].T
-    
-    # Calculate resisduals
-    rver = (source - targetNN).flatten('F')
-    rlan = (source[:, sourceLandmarkInds] - targetLandmarks).flatten('F')
-        
-    drV_dalpha = s*np.tensordot(R, m.idEvec, axes = 1)
-    drV_ddelta = s*np.tensordot(R, m.expEvec, axes = 1)
-    drV_dpsi = s*np.dot(dR_dpsi(angles), model)
-    drV_dtheta = s*np.dot(dR_dtheta(angles), model)
-    drV_dphi = s*np.dot(dR_dphi(angles), model)
-    drV_dt = np.tile(np.eye(3), [m.numVertices, 1])
-    drV_ds = np.dot(R, model)
-    
-    Jver = np.c_[drV_dalpha.reshape((source.size, idCoef.size), order = 'F'), drV_ddelta.reshape((source.size, expCoef.size), order = 'F'), drV_dpsi.flatten('F'), drV_dtheta.flatten('F'), drV_dphi.flatten('F'), drV_dt, drV_ds.flatten('F')]
-    
-    Jlan = np.c_[drV_dalpha[:, sourceLandmarkInds, :].reshape((targetLandmarks.size, idCoef.size), order = 'F'), drV_ddelta[:, sourceLandmarkInds, :].reshape((targetLandmarks.size, expCoef.size), order = 'F'), drV_dpsi[:, sourceLandmarkInds].flatten('F'), drV_dtheta[:, sourceLandmarkInds].flatten('F'), drV_dphi[:, sourceLandmarkInds].flatten('F'), drV_dt[:sourceLandmarkInds.size * 3, :], drV_ds[:, sourceLandmarkInds].flatten('F')]
-    
-    return 2 * (np.dot(Jver.T, rver) / m.numVertices + 2 * np.dot(Jlan.T, rlan) / sourceLandmarkInds.size + np.r_[idCoef / m.idEval, expCoef / m.expEval, np.zeros(7)])
-    
-#    drR_dalpha = np.diag(2*idCoef / m.idEval)
-#    drR_ddelta = np.diag(2*expCoef / m.expEval)
-#            
-#    J = np.r_[2 * np.c_[drV_dalpha.reshape((source.size, idCoef.size), order = 'F'), drV_ddelta.reshape((source.size, expCoef.size), order = 'F'), drV_dpsi.flatten('F'), drV_dtheta.flatten('F'), drV_dphi.flatten('F'), drV_dt, drV_ds.flatten('F')] / m.numVertices, 2 * np.c_[drV_dalpha[:, sourceLandmarkInds, :].reshape((targetLandmarks.size, idCoef.size), order = 'F'), drV_ddelta[:, sourceLandmarkInds, :].reshape((targetLandmarks.size, expCoef.size), order = 'F'), drV_dpsi[:, sourceLandmarkInds].flatten('F'), drV_dtheta[:, sourceLandmarkInds].flatten('F'), drV_dphi[:, sourceLandmarkInds].flatten('F'), drV_dt[:sourceLandmarkInds.size * 3, :], drV_ds[:, sourceLandmarkInds].flatten('F')] / sourceLandmarkInds.size, np.c_[drR_dalpha, np.zeros((idCoef.size, expCoef.size + 7))], np.c_[np.zeros((expCoef.size, idCoef.size)), drR_ddelta, np.zeros((expCoef.size, 7))]]
-#    
-#    return J.T.dot(np.r_[rver, rlan, idCoef ** 2 / m.idEval, expCoef ** 2 / m.expEval])
-
-def gaussNewton(P, m, target, targetLandmarks, sourceLandmarkInds, NN, jacobi = True, calcId = True):
-    """
-    Energy function to be minimized for fitting.
-    """
-    # Shape eigenvector coefficients
-    idCoef = P[: m.idEval.size]
-    expCoef = P[m.idEval.size: m.idEval.size + m.expEval.size]
-    
-    # Rotation Euler angles, translation vector, scaling factor
-    angles = P[m.idEval.size + m.expEval.size:][:3]
-    R = rotMat2angle(angles)
-    t = P[m.idEval.size + m.expEval.size:][3: 6]
-    s = P[m.idEval.size + m.expEval.size:][6]
-    
-    # Transpose if necessary
-    if targetLandmarks.shape[0] != 3:
-        targetLandmarks = targetLandmarks.T
-    
-    # The eigenmodel, before rigid transformation and scaling
-    model = m.idMean + np.tensordot(m.idEvec, idCoef, axes = 1) + np.tensordot(m.expEvec, expCoef, axes = 1)
-    
-    # After rigid transformation and scaling
-    source = s*np.dot(R, model) + t[:, np.newaxis]
-    
-    # Find the nearest neighbors of the target to the source vertices
-#    start = clock()
-    distance, ind = NN.kneighbors(source.T)
-    targetNN = target[ind.squeeze(axis = 1), :].T
-#    print('NN: %f' % (clock() - start))
-    
-    # Calculate resisduals
-    rVert = targetNN - source
-    rLand = targetLandmarks - source[:, sourceLandmarkInds]
-    rAlpha = idCoef ** 2 / m.idEval
-    rDelta = expCoef ** 2 / m.expEval
-    
-    # Calculate costs
-    Ever = np.linalg.norm(rVert, axis = 0).sum() / m.numVertices
-    Elan = np.linalg.norm(rLand, axis = 0).sum() / sourceLandmarkInds.size
-    Ereg = np.sum(rAlpha) + np.sum(rDelta)
-    
-    if jacobi:
-#        start = clock()
-        
-        drV_dalpha = -s*np.tensordot(R, m.idEvec, axes = 1)
-        drV_ddelta = -s*np.tensordot(R, m.expEvec, axes = 1)
-        drV_dpsi = -s*np.dot(dR_dpsi(angles), model)
-        drV_dtheta = -s*np.dot(dR_dtheta(angles), model)
-        drV_dphi = -s*np.dot(dR_dphi(angles), model)
-        drV_dt = -np.tile(np.eye(3), [source.shape[1], 1])
-        drV_ds = -np.dot(R, model)
-        
-        drR_dalpha = np.diag(2*idCoef / m.idEval)
-        drR_ddelta = np.diag(2*expCoef / m.expEval)
-        
-        # Calculate Jacobian
-        if calcId:
-            
-            r = np.r_[rVert.flatten('F'), rLand.flatten('F'), rAlpha, rDelta]
-        
-            J = np.r_[np.c_[drV_dalpha.reshape((source.size, idCoef.size), order = 'F'), drV_ddelta.reshape((source.size, expCoef.size), order = 'F'), drV_dpsi.flatten('F'), drV_dtheta.flatten('F'), drV_dphi.flatten('F'), drV_dt, drV_ds.flatten('F')], np.c_[drV_dalpha[:, sourceLandmarkInds, :].reshape((targetLandmarks.size, idCoef.size), order = 'F'), drV_ddelta[:, sourceLandmarkInds, :].reshape((targetLandmarks.size, expCoef.size), order = 'F'), drV_dpsi[:, sourceLandmarkInds].flatten('F'), drV_dtheta[:, sourceLandmarkInds].flatten('F'), drV_dphi[:, sourceLandmarkInds].flatten('F'), drV_dt[:sourceLandmarkInds.size * 3, :], drV_ds[:, sourceLandmarkInds].flatten('F')], np.c_[drR_dalpha, np.zeros((idCoef.size, expCoef.size + 7))], np.c_[np.zeros((expCoef.size, idCoef.size)), drR_ddelta, np.zeros((expCoef.size, 7))]]
-            
-            # Parameter update (Gauss-Newton)
-            dP = -np.linalg.inv(np.dot(J.T, J)).dot(J.T).dot(r)
-        
-        else:
-            
-            r = np.r_[rVert.flatten('F'), rLand.flatten('F'), rDelta]
-            
-            J = np.r_[np.c_[drV_ddelta.reshape((source.size, expCoef.size), order = 'F'), drV_dpsi.flatten('F'), drV_dtheta.flatten('F'), drV_dphi.flatten('F'), drV_dt, drV_ds.flatten('F')], np.c_[drV_ddelta[:, sourceLandmarkInds, :].reshape((np.prod(targetLandmarks.shape), expCoef.size), order = 'F'), drV_dpsi[:, sourceLandmarkInds].flatten('F'), drV_dtheta[:, sourceLandmarkInds].flatten('F'), drV_dphi[:, sourceLandmarkInds].flatten('F'), drV_dt[:sourceLandmarkInds.size * 3, :], drV_ds[:, sourceLandmarkInds].flatten('F')], np.c_[drR_ddelta, np.zeros((expCoef.size, 7))]]
-            
-            # Parameter update (Gauss-Newton)
-            dP = np.r_[np.zeros(m.idEval.size), -np.linalg.inv(np.dot(J.T, J)).dot(J.T).dot(r)]
-        
-#        print('GN: %f' % (clock() - start))
-        
-        return Ever + Elan + Ereg, dP
-    
-    return Ever + Elan + Ereg
-
 if __name__ == "__main__":
     
     os.chdir('/home/leon/f2f-fitting/obama/orig/')
@@ -425,10 +459,10 @@ if __name__ == "__main__":
     
 #    plt.ioff()
     param = np.zeros((numFrames, m.idEval.size + m.expEval.size + 7))
+    cam = 'perspective'
     
     for frame in np.arange(1, 1 + 1):
         print(frame)
-    #    fName = '{:0>5}'.format(frame * 10)
         fName = '{:0>5}'.format(frame)
         fNameImgOrig = '../orig/' + fName + '.png'
         fNameLandmarks = '../landmark/' + fName + '.json'
@@ -437,19 +471,11 @@ if __name__ == "__main__":
         Preprocess landmark locations: map to cropped/scaled version of image
         '''
         
-        # Read the landmarks
-        if fNameLandmarks.endswith('.txt'):
-            with open(fNameLandmarks, 'r') as fd:
-                lm = []
-                for l in fd:
-                    lm.append([int(coord) for coord in l.split(',')])
-            lm = np.array(lm)
-        elif fNameLandmarks.endswith('.json'):
-            with open(fNameLandmarks, 'r') as fd:
-                lm = json.load(fd)
-            lm = np.array([l[0] for l in lm], dtype = int).squeeze()[:, :3]
-            lmConf = lm[targetLandmarkInds, -1]
-            lm = lm[targetLandmarkInds, :2]
+        with open(fNameLandmarks, 'r') as fd:
+            lm = json.load(fd)
+        lm = np.array([l[0] for l in lm], dtype = int).squeeze()[:, :3]
+        lmConf = lm[targetLandmarkInds, -1]
+        lm = lm[targetLandmarkInds, :2]
         
         # Plot the landmarks on the image
         img = mpimg.imread(fNameImgOrig)
@@ -483,84 +509,17 @@ if __name__ == "__main__":
             
         lm3D = generateFace(param, m, ind = sourceLandmarkInds).T
         
-        # Direct linear transform / "Gold Standard Algorithm"
-        # Normalize landmark coordinates; preconditioning
-        numLandmarks = targetLandmarkInds.size
-        c2D = np.mean(lm, axis = 0)
-        uvCentered = lm - c2D
-        s2D = np.linalg.norm(uvCentered, axis = 1).mean()
-        x = np.c_[uvCentered / s2D * np.sqrt(2), np.ones(numLandmarks)]
-        
-        c3D = np.mean(lm3D, axis = 0)
-        xyzCentered = lm3D - c3D
-        s3D = np.linalg.norm(xyzCentered, axis = 1).mean()
-        X = np.c_[xyzCentered / s3D * np.sqrt(3), np.ones(numLandmarks)]
-        
-        Tinv = np.array([[s2D, 0, c2D[0]], [0, s2D, c2D[1]], [0, 0, 1]])
-        U = np.linalg.inv([[s3D, 0, 0, c3D[0]], [0, s3D, 0, c3D[1]], [0, 0, s3D, c3D[2]], [0, 0, 0, 1]])
-        
-        # Create matrix for homogenous system of equations to solve for camera matrix
-        A = np.zeros((2*numLandmarks, 12))
-        A[0: 2*numLandmarks - 1: 2, 0: 4] = X
-        A[0: 2*numLandmarks - 1: 2, 8:] = -x[:, 0, np.newaxis] * X
-        A[1: 2*numLandmarks: 2, 4: 8] = -X
-        A[1: 2*numLandmarks: 2, 8:] = x[:, 1, np.newaxis] * X
-        
-        # Take the SVD and take the last row of V' as the homogenous solution
-        V = np.linalg.svd(A, full_matrices = 0)[-1]
-        Pnorm = np.reshape(V[-1, :], (3, 4))
-        
-        # Further nonlinear LS to minimize error between 2D landmarks and 3D projections onto 2D plane.
-        def cameraProjectionResidual(M, x, X):
-            """
-            min_{P} sum_{i} || x_i - PX_i ||^2
-            """
-            return x.flatten() - np.dot(X, M.reshape((3, 4)).T).flatten()
-        
-        Pgold = least_squares(cameraProjectionResidual, Pnorm.flatten(), args = (x, X))
-        
-        # Denormalize P
-        P = Tinv.dot(Pgold.x.reshape(3, 4)).dot(U)
+        P = estCamMat(lm, lm3D, cam)
         
         # Even more minimization with projection matrix to get initial shape parameters
-        def camWithShape(param, m, lm2d, lm3dInd):
-            """
-            Minimize L2-norm of landmark fitting residuals and regularization terms for shape parameters
-            """
-            P = param[:12]
-            P = P.reshape((3, 4))
-            idCoef = param[12: 12 + m.idEval.size]
-            expCoef = param[12 + m.idEval.size:]
-            
-            # Convert to homogenous coordinates
-            numLandmarks = lm3dInd.size
-            
-            source = generateFace(np.r_[idCoef, expCoef, np.zeros(6), 1], m, ind = lm3dInd).T
-            
-            xlan = np.c_[lm2d, np.ones(numLandmarks)]
-            Xlan = np.dot(np.c_[source, np.ones(numLandmarks)], P.T)
-            
-            # Energy of landmark residuals
-            r = (Xlan - xlan).flatten('F')
-            Elan = np.dot(r, r)
-#            Elan = np.linalg.norm(Xlan - xlan, axis = 1).sum()
-            
-            # Energy of shape regularization terms
-            Ereg = np.sum(idCoef ** 2 / m.idEval) + np.sum(expCoef ** 2 / m.expEval)
-            
-            return Elan + Ereg
-        
-        initCamShape = minimize(camWithShape, np.r_[P.flatten(), idCoef, expCoef], args = (m, lm, sourceLandmarkInds))
+        initCamShape = minimize(camWithShape, np.r_[P.flatten(), idCoef, expCoef], args = (m, lm, sourceLandmarkInds, cam))
         
         # Separate variates in parameter vector
         P = initCamShape.x[:12].reshape((3, 4))
         idCoef = initCamShape.x[12: 12 + m.idEval.size]
         expCoef = initCamShape.x[12 + m.idEval.size:]
         
-        # Get inner parameters from projection matrix via RQ decomposition
-        K, R = rq(P[:, :3])
-        angles = rotMat2angle(R)
-        t = np.linalg.inv(K).dot(P[:, -1])
+        K, angles, t = splitCamMat(P, cam)
         
         # Project 3D model into 2D plane
         param = np.r_[idCoef, expCoef, angles, t, 1]
@@ -704,23 +663,6 @@ if __name__ == "__main__":
         plt.imshow(imgScaled)
         plt.scatter(source[0, :], source[1, :], s = 1)
         break
-        
-        if frame <= 20:
-            
-            cost = np.empty((50))
-            for i in range(cost.size):
-        #        print('Iteration %d' % i)
-                cost[i], dP = gaussNewton(P, m, target, targetLandmarks, sourceLandmarkInds[nzd], NN, calcId = True)
-                
-                P += dP
-        
-        else:
-            cost = np.empty((25))
-            for i in range(cost.size):
-        #        print('Iteration %d' % i)
-                cost[i], dP = gaussNewton(P, m, target, targetLandmarks, sourceLandmarkInds[nzd], NN, calcId = False)
-                
-                P += dP
 
 #    np.save('../param', param)
 #    np.save('../paramRTS2Orig', np.c_[param[:, :m.idEval.size + m.expEval.size + 3], TS2orig])
