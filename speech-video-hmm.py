@@ -5,7 +5,7 @@ Created on Mon Dec  4 15:02:36 2017
 
 @author: leon
 """
-from vol2mesh import Bunch, generateFace, exportObj
+from mm import Bunch, generateFace, exportObj
 import os
 import numpy as np
 import librosa
@@ -18,6 +18,8 @@ from hmmlearn import hmm
 from sklearn.preprocessing import StandardScaler
 import matplotlib.image as mpimg
 from skimage import io
+import matplotlib.pyplot as plt
+from scipy.sparse import csc_matrix, issparse
 
 if __name__ == "__main__":
 
@@ -173,19 +175,39 @@ if __name__ == "__main__":
         
 #    frameDifferences = metrics.pairwise.euclidean_distances(videoVec)
     frameDifferences = np.load('frameDistanceMat.npy')
-    A = np.exp(-0.1*frameDifferences)
-    A /= A.sum(1)[:, np.newaxis]
+#    plt.figure()
+#    plt.hist(frameDifferences.flatten(), bins = 'auto')
+    thres = np.min(frameDifferences + frameDifferences.max()*np.eye(numFrames), axis = 1) + 30
+    
+    transitionableFrames = frameDifferences < thres[:, np.newaxis]
+    np.fill_diagonal(transitionableFrames, False)
+    rowInd, colInd = np.nonzero(transitionableFrames)
+    numTransitionableFrames = transitionableFrames.sum(1)
+    
+    plt.figure()
+    plt.hist(numTransitionableFrames, bins = numTransitionableFrames.max() - 1)
+    
+    A = csc_matrix((np.exp(-0.1*frameDifferences[transitionableFrames]), (rowInd, colInd)), shape = (numFrames, numFrames))
+    
+    A.data /= np.take(np.asarray(A.sum(1)).reshape(-1), A.indices)
+    
+    plt.figure()
+    plt.hist(A.data, bins = 100)
+    
+#    plt.figure()
+#    plt.imshow(A.toarray())
     
     # Find the frames that match to each clustered 3DMM state and set a uniform PDF for these frames as the emission probabilities
 #    state2frame = [None] * N
-    B = np.zeros((numFrames, N))
+    B = 0.01*np.ones((numFrames, N))
 #    for i in range(N):
 #        state2frame[i] = np.nonzero(stateLabels == i)[0].tolist()
 #        B[state2frame[i], i] = 1. / len(state2frame[i])
     
     B[np.arange(numFrames), stateLabels] = 1
+    B /= B.sum(1)[:, np.newaxis]
     
-    B = np.ones((numFrames, N)) / N
+#    B = np.ones((numFrames, N)) / N
     
     # Use a uniform PDF over all frames as the initial distribution
     pi = np.ones(numFrames) / numFrames
@@ -193,8 +215,9 @@ if __name__ == "__main__":
     # Set up the HMM
     model = hmm.MultinomialHMM(n_components = numFrames)
     model.startprob_ = pi
-    model.transmat_ = A
+    model.transmat_ = A.toarray()
     model.emissionprob_ = B
-    
-    
-    frames = model.predict(stateLabels.reshape(-1, 1))
+#    
+#    
+    frames = model.predict(stateSeq_kuro.reshape(-1, 1))
+    np.save('kuroSelectedFrames2.npy', frames)
