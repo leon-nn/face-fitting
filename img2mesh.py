@@ -14,7 +14,7 @@ Created on Fri Nov 17 15:52:46 2017
 @author: leon
 """
 
-from mm import Bunch, onpick3, exportObj, generateFace, rotMat2angle, initialRegistration, orthographicEst, perspectiveEst, estCamMat, splitCamMat, camWithShape, dR_dpsi, dR_dtheta, dR_dphi, calcNormals, shBasis
+from mm import Bunch, onpick3, exportObj, generateFace, rotMat2angle, initialRegistration, estCamMat, splitCamMat, camWithShape, dR_dpsi, dR_dtheta, dR_dphi, calcNormals, shBasis
 from time import clock
 import glob, os, re, json
 import numpy as np
@@ -47,7 +47,7 @@ if __name__ == "__main__":
     
 #    plt.ioff()
     param = np.zeros((numFrames, m.idEval.size + m.expEval.size + 7))
-    cam = 'perspective'
+    cam = 'orthographic'
     
     for frame in np.arange(1, 1 + 1):
         print(frame)
@@ -94,34 +94,65 @@ if __name__ == "__main__":
             expCoef = np.zeros(m.expEval.size)
             texCoef = np.zeros(m.texEval.size)
             param = np.r_[np.zeros(m.idEval.size + m.expEval.size + 6), 1]
-            
+        
+        # Get the 3D xyz values of the 3DMM landmarks
         lm3D = generateFace(param, m, ind = sourceLandmarkInds).T
         
+        # Estimate the camera projection matrix from the landmark correspondences
         P = estCamMat(lm, lm3D, cam)
         
         # Even more minimization with projection matrix to get initial shape parameters
-        initCamShape = minimize(camWithShape, np.r_[P.flatten(), idCoef, expCoef], args = (m, lm, sourceLandmarkInds, cam))
+#        initCamShape = minimize(camWithShape, np.r_[P.flatten(), idCoef, expCoef], args = (m, lm, sourceLandmarkInds, cam))
         
         # Separate variates in parameter vector
-        P = initCamShape.x[:12].reshape((3, 4))
-        idCoef = initCamShape.x[12: 12 + m.idEval.size]
-        expCoef = initCamShape.x[12 + m.idEval.size:]
+        if cam == 'orthographic':
+            
+            
+#            P = initCamShape['x'][:8].reshape((2, 4))
+#            idCoef = initCamShape['x'][8: 8 + m.idEval.size]
+#            expCoef = initCamShape['x'][8 + m.idEval.size:]
+            
+            # Factor the camera projection matrix into the intrinsic camera parameters and the rotation/translation similarity transform parameters
+            s, angles, t = splitCamMat(P, cam)
+            
+            K, R = rq(P[:, :3], mode = 'economic')
+            R = np.vstack((R[0, :], R[1, :], np.cross(R[0, :], R[1, :])))
+            angles = rotMat2angle(R)
+            s = np.fabs(np.diag(K)).mean()
+            t = P[:, 3]
+            R0 = rotMat2angle(angles)
+            
+            # Project 3D model into 2D plane
+            param = np.r_[idCoef, expCoef, angles, t, 0, s]
+            modelBeforeProj = generateFace(np.r_[param[:idCoef.size + expCoef.size], np.zeros(6), 1], m)
+            fitting = generateFace(param, m)
+            fitting1 = P.dot(np.vstack((modelBeforeProj, np.ones(m.numVertices))))
+            fitting2 = s*(rotMat2angle(angles).dot(modelBeforeProj) + np.r_[t, 0][:, np.newaxis])
+            
+            
+        elif cam == 'perspective':
+            P = initCamShape.x[:12].reshape((3, 4))
+            idCoef = initCamShape.x[12: 12 + m.idEval.size]
+            expCoef = initCamShape.x[12 + m.idEval.size:]
         
-        K, angles, t = splitCamMat(P, cam)
-        
-        # Project 3D model into 2D plane
-        param = np.r_[idCoef, expCoef, angles, t, 1]
-        modelBeforeProj = generateFace(param, m)
-        fitting = K.dot(modelBeforeProj)
+            # Factor the camera projection matrix into the intrinsic camera parameters and the rotation/translation similarity transform parameters
+            K, angles, t = splitCamMat(P, cam)
+            
+            param = np.r_[idCoef, expCoef, angles, t, 1]
+            fitting = generateFace(param, m)
+            modelBeforeProj = generateFace(param, m)
+            fitting = K.dot(modelBeforeProj)
         
         # Plot the projected 3D model on top of the input RGB image
         plt.figure()
         plt.imshow(img)
 #        plt.scatter(fitting[0, :], fitting[1, :], s = 0.1, c = 'g')
-        plt.scatter(fitting[0, sourceLandmarkInds], fitting[1, sourceLandmarkInds], s = 3, c = 'b')
-#        plt.scatter(lm[:, 0], lm[:, 1], s = 2, c = 'r')
+        plt.scatter(fitting1[0, sourceLandmarkInds], fitting1[1, sourceLandmarkInds], s = 3, c = 'b')
+        plt.scatter(lm[:, 0], lm[:, 1], s = 2, c = 'r')
         
-#        tmesh = mlab.triangular_mesh(modelBeforeProj[0, :], modelBeforeProj[1, :], modelBeforeProj[2, :], m.face, scalars = np.arange(m.numVertices), color = (1, 1, 1))
+        tmesh = mlab.triangular_mesh(modelBeforeProj[0, :], modelBeforeProj[1, :], modelBeforeProj[2, :], m.face, scalars = np.arange(m.numVertices), color = (1, 1, 1))
+        
+#        rendering = mlab.screenshot()
         
         break
         # Z-buffer: smaller z is closer to image plane (e.g. the nose should have relatively small z values)

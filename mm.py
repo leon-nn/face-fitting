@@ -962,7 +962,7 @@ def estCamMat(lm2D, lm3D, cam = 'perspective'):
     c2D = np.mean(lm2D, axis = 0)
     uvCentered = lm2D - c2D
     s2D = np.linalg.norm(uvCentered, axis = 1).mean()
-    x = np.c_[uvCentered / s2D * np.sqrt(2), np.ones(numLandmarks)]
+    
     
     c3D = np.mean(lm3D, axis = 0)
     xyzCentered = lm3D - c3D
@@ -974,6 +974,8 @@ def estCamMat(lm2D, lm3D, cam = 'perspective'):
     U = np.linalg.inv([[s3D, 0, 0, c3D[0]], [0, s3D, 0, c3D[1]], [0, 0, s3D, c3D[2]], [0, 0, 0, 1]])
     
     if cam == 'orthographic':
+        x = uvCentered / s2D * np.sqrt(2)
+        
         # Build linear system of equations in 8 unknowns of projection matrix
         A = np.zeros((2 * numLandmarks, 8))
         
@@ -981,14 +983,58 @@ def estCamMat(lm2D, lm3D, cam = 'perspective'):
         A[1: 2*numLandmarks: 2, 4:] = X
         
         # Solve linear system and de-normalize
-        p8 = np.linalg.lstsq(A, x.flatten())[0]
+        p8 = np.linalg.lstsq(A, x.flatten())[0].reshape(2, 4)
         
-        Pnorm = np.r_[p8, 0, 0, 0, 1].reshape(3, 4)
+        K, R = rq(p8[:, :3], mode = 'economic')
+        R = np.vstack((R[0, :], R[1, :], np.cross(R[0, :], R[1, :])))
+        angles = rotMat2angle(R)
+        param = np.r_[K[0, 0], K[0, 1], K[1, 1], angles, p8[:, 3]]
+        
+        def orthographicCamMatLS(param, x, X, w):
+            # Reconstruct the camera matrix P from the RQ decomposition
+            K = np.array([[param[0], param[1]], [0 , param[2]]])
+            R = rotMat2angle(param[3: 6])[:2, :]
+            P = np.c_[K.dot(R), param[6:]]
+            
+            # Calculate resisduals of landmark correspondences
+            r = x.flatten() - np.dot(X, P.T).flatten()
+    
+            # Calculate residuals for constraints
+            rscale = np.fabs(param[0] - param[2])
+            rskew = param[1]
+    
+            return np.r_[w[0] * r, w[1] * rscale, w[2] * rskew]
+            
+        def orthographicCamMat(param, x, X, w):
+            # Reconstruct the camera matrix P from the RQ decomposition
+            K = np.array([[param[0], param[1]], [0 , param[2]]])
+            R = rotMat2angle(param[3: 6])[:2, :]
+            P = np.c_[K.dot(R), param[6:]]
+            
+            # Calculate resisduals of landmark correspondences
+            r = x.flatten() - np.dot(X, P.T).flatten()
+    
+            # Calculate costs
+            Elan = np.dot(r, r)
+            Escale = np.square(np.fabs(param[0]) - np.fabs(param[2]))
+            Eskew = np.square(param[1])
+    
+            return w[0] * Elan + w[1] * Escale + w[2] * Eskew
+        
+        param = minimize(orthographicCamMat, param, args = (x, X, (1, 1, 1)))
+#        param = least_squares(orthographicCamMatLS, param, args = (x, X, (1, 1, 1)), bounds = (np.r_[0, 0, 0, -np.inf*np.ones(5)], np.inf))
+        K = np.array([[param.x[0], param.x[1]], [0 , param.x[2]]])
+        R = rotMat2angle(param.x[3: 6])[:2, :]
+        p8 = np.c_[K.dot(R), param.x[6:]]
+        
+        Pnorm = np.vstack((p8, np.array([0, 0, 0, 1])))
         P = Tinv.dot(Pnorm).dot(U)
         
         return P[:2, :]
     
     elif cam == 'perspective':
+        x = np.c_[uvCentered / s2D * np.sqrt(2), np.ones(numLandmarks)]
+        
         # Matrix for homogenous system of equations to solve for camera matrix
         A = np.zeros((2 * numLandmarks, 12))
         
@@ -1049,7 +1095,7 @@ def splitCamMat(P, cam = 'perspective'):
     
     elif cam == 'perspective':
         # Get inner parameters from projection matrix via RQ decomposition
-        K, R = rq(P[:, :3])
+        K, R = rq(P[:, :3], mode = 'economic')
         angle = rotMat2angle(R)
         t = np.linalg.inv(K).dot(P[:, -1])
         
@@ -1100,15 +1146,15 @@ if __name__ == "__main__":
     #bfm2fw = np.array([0, 2, 3, 4, 5, 6, 7, 8, 13, 14, 16, 17, 18, 21, 22, 23, 24, 29, 30, 32, 33, 34, 37, 38, 39])
     #fw2bfm = np.array([7, 59, 55, 62, 49, 39, 65, 34, 33, 31, 32, 52, 50, 45, 41, 40, 30, 29, 27, 28, 46, 48, 44, 37, 38])
     
-    targetLandmarkInds = np.array([0, 1, 2, 3, 8, 13, 14, 15, 16, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 61, 62, 63, 65, 66, 67, 68, 69])
-    sourceLandmarkInds = np.array([16203, 16235, 16260, 16290, 27061, 22481, 22451, 22426, 22394, 8134, 8143, 8151, 8156, 6986, 7695, 8167, 8639, 9346, 2345, 4146, 5180, 6214, 4932, 4158, 10009, 11032, 12061, 13872, 12073, 11299, 5264, 6280, 7472, 8180, 8888, 10075, 11115, 9260, 8553, 8199, 7845, 7136, 7600, 8190, 8780, 8545, 8191, 7837, 4538, 11679])
-    
-    idCoef = np.zeros(m.idEval.shape)
-    idCoef[0] = 1
-    expCoef = np.zeros(m.expEval.shape)
-    expCoef[0] = 1
-    texCoef = np.zeros(m.texEval.shape)
-    texCoef[0] = 1
+#    targetLandmarkInds = np.array([0, 1, 2, 3, 8, 13, 14, 15, 16, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 61, 62, 63, 65, 66, 67, 68, 69])
+#    sourceLandmarkInds = np.array([16203, 16235, 16260, 16290, 27061, 22481, 22451, 22426, 22394, 8134, 8143, 8151, 8156, 6986, 7695, 8167, 8639, 9346, 2345, 4146, 5180, 6214, 4932, 4158, 10009, 11032, 12061, 13872, 12073, 11299, 5264, 6280, 7472, 8180, 8888, 10075, 11115, 9260, 8553, 8199, 7845, 7136, 7600, 8190, 8780, 8545, 8191, 7837, 4538, 11679])
+#    
+#    idCoef = np.zeros(m.idEval.shape)
+#    idCoef[0] = 1
+#    expCoef = np.zeros(m.expEval.shape)
+#    expCoef[0] = 1
+#    texCoef = np.zeros(m.texEval.shape)
+#    texCoef[0] = 1
     
     ## Load 3D vertex indices of landmarks and find their vertices on the neutral face
     #landmarkInds3D = np.load('./data/landmarkInds3D.npy')

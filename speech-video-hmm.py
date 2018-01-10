@@ -189,10 +189,10 @@ if __name__ == "__main__":
     
     A = csc_matrix((np.exp(-0.1*frameDifferences[transitionableFrames]), (rowInd, colInd)), shape = (numFrames, numFrames))
     
-    A.data /= np.take(np.asarray(A.sum(1)).reshape(-1), A.indices)
+    A.data /= np.take(A.sum(1).A1, A.indices)
     
-    plt.figure()
-    plt.hist(A.data, bins = 100)
+#    plt.figure()
+#    plt.hist(A.data, bins = 100)
     
 #    plt.figure()
 #    plt.imshow(A.toarray())
@@ -213,11 +213,11 @@ if __name__ == "__main__":
     pi = np.ones(numFrames) / numFrames
     
     # Set up the HMM
-    model = hmm.MultinomialHMM(n_components = numFrames)
-    model.startprob_ = pi
-    model.transmat_ = A.toarray()
-    model.emissionprob_ = B
+#    model = hmm.MultinomialHMM(n_components = numFrames)
+#    model.startprob_ = pi
+#    model.transmat_ = A.toarray()
+#    model.emissionprob_ = B
 #    
 #    
-    frames = model.predict(stateSeq_kuro.reshape(-1, 1))
-    np.save('kuroSelectedFrames2.npy', frames)
+#    frames = model.predict(stateSeq_kuro.reshape(-1, 1))
+#    np.save('kuroSelectedFrames2.npy', frames)
