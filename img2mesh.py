@@ -14,7 +14,8 @@ Created on Fri Nov 17 15:52:46 2017
 @author: leon
 """
 
-from mm import Bunch, onpick3, exportObj, generateFace, rotMat2angle, initialRegistration, estCamMat, splitCamMat, camWithShape, dR_dpsi, dR_dtheta, dR_dphi, calcNormals, shBasis
+from mm import Bunch, onpick3, exportObj, generateFace, rotMat2angle, initialShapeCost2D, initialShapeGrad2D, estCamMat, splitCamMat, camWithShape, dR_dpsi, dR_dtheta, dR_dphi, calcNormals, shBasis
+#from visualize import mlab_imshowColor
 from time import clock
 import glob, os, re, json
 import numpy as np
@@ -27,6 +28,26 @@ import matplotlib.image as mpimg
 from mayavi import mlab
 #import visvis as vv
 from pylab import savefig
+import cv2
+from tvtk.api import tvtk
+
+def mlab_imshowColor(im, alpha = 255, **kwargs):
+    """
+    Plot a color image with mayavi.mlab.imshow.
+    im is a ndarray with dim (n, m, 3) and scale (0->255]
+    alpha is a single number or a ndarray with dim (n*m) and scale (0->255]
+    **kwargs is passed onto mayavi.mlab.imshow(..., **kwargs)
+    """
+    im = np.concatenate((im, alpha * np.ones((im.shape[0], im.shape[1], 1), dtype = np.uint8)), axis = -1)
+    colors = tvtk.UnsignedCharArray()
+    colors.from_array(im.reshape(-1, 4))
+    m_image = mlab.imshow(np.ones(im.shape[:2][::-1]))
+    m_image.actor.input.point_data.scalars = colors
+    
+    mlab.draw()
+    mlab.show()
+
+    return
 
 if __name__ == "__main__":
     
@@ -49,6 +70,11 @@ if __name__ == "__main__":
     param = np.zeros((numFrames, m.idEval.size + m.expEval.size + 7))
     cam = 'orthographic'
     
+    view = np.load('../viewInFrame.npz')
+    
+    wLan = 10
+    wReg = 1
+    
     for frame in np.arange(1, 1 + 1):
         print(frame)
         fName = '{:0>5}'.format(frame)
@@ -66,7 +92,7 @@ if __name__ == "__main__":
         lm = lm[targetLandmarkInds, :2]
         
         # Plot the landmarks on the image
-        img = mpimg.imread(fNameImgOrig)
+        img = (mpimg.imread(fNameImgOrig) * 255).astype(np.uint8)
 #        plt.figure()
 #        plt.imshow(img)
 #        plt.scatter(lm[:, 0], lm[:, 1], s = 2)
@@ -106,29 +132,26 @@ if __name__ == "__main__":
         
         # Separate variates in parameter vector
         if cam == 'orthographic':
-            
-            
-#            P = initCamShape['x'][:8].reshape((2, 4))
-#            idCoef = initCamShape['x'][8: 8 + m.idEval.size]
-#            expCoef = initCamShape['x'][8 + m.idEval.size:]
-            
             # Factor the camera projection matrix into the intrinsic camera parameters and the rotation/translation similarity transform parameters
             s, angles, t = splitCamMat(P, cam)
             
-            K, R = rq(P[:, :3], mode = 'economic')
-            R = np.vstack((R[0, :], R[1, :], np.cross(R[0, :], R[1, :])))
-            angles = rotMat2angle(R)
-            s = np.fabs(np.diag(K)).mean()
-            t = P[:, 3]
-            R0 = rotMat2angle(angles)
+            param = np.r_[idCoef, expCoef, angles, t, s]
+            
+            initFit = minimize(initialShapeCost2D, param, args = (lm, m, sourceLandmarkInds, (wLan, wReg)), jac = initialShapeGrad2D)
+            param = initFit.x
+            
+#            K, R = rq(P[:, :3], mode = 'economic')
+#            R = np.vstack((R[0, :], R[1, :], np.cross(R[0, :], R[1, :])))
+#            angles = rotMat2angle(R)
+#            s = np.fabs(np.diag(K)).mean()
+#            t = P[:, 3]
+#            R0 = rotMat2angle(angles)
             
             # Project 3D model into 2D plane
-            param = np.r_[idCoef, expCoef, angles, t, 0, s]
             modelBeforeProj = generateFace(np.r_[param[:idCoef.size + expCoef.size], np.zeros(6), 1], m)
-            fitting = generateFace(param, m)
-            fitting1 = P.dot(np.vstack((modelBeforeProj, np.ones(m.numVertices))))
-            fitting2 = s*(rotMat2angle(angles).dot(modelBeforeProj) + np.r_[t, 0][:, np.newaxis])
-            
+            fitting = generateFace(np.r_[param[:-1], 0, param[-1]], m)
+#            fitting1 = P.dot(np.vstack((modelBeforeProj, np.ones(m.numVertices))))
+#            fitting2 = s*(rotMat2angle(angles).dot(modelBeforeProj) + np.r_[t, 0][:, np.newaxis])
             
         elif cam == 'perspective':
             P = initCamShape.x[:12].reshape((3, 4))
@@ -147,12 +170,25 @@ if __name__ == "__main__":
         plt.figure()
         plt.imshow(img)
 #        plt.scatter(fitting[0, :], fitting[1, :], s = 0.1, c = 'g')
-        plt.scatter(fitting1[0, sourceLandmarkInds], fitting1[1, sourceLandmarkInds], s = 3, c = 'b')
-        plt.scatter(lm[:, 0], lm[:, 1], s = 2, c = 'r')
+        plt.scatter(fitting[0, sourceLandmarkInds], fitting[1, sourceLandmarkInds], s = 3, c = 'b')
+#        plt.scatter(fitting1[0, sourceLandmarkInds], fitting1[1, sourceLandmarkInds], s = 3, c = 'b')
+#        plt.scatter(lm[:, 0], lm[:, 1], s = 2, c = 'r')
         
-        tmesh = mlab.triangular_mesh(modelBeforeProj[0, :], modelBeforeProj[1, :], modelBeforeProj[2, :], m.face, scalars = np.arange(m.numVertices), color = (1, 1, 1))
+#        tmesh = mlab.triangular_mesh(fitting[0, :], fitting[1, :], fitting[2, :], m.face, scalars = np.arange(m.numVertices), color = (1, 1, 1))
+        break
+        mlab_imshowColor(img)
         
-#        rendering = mlab.screenshot()
+        texture = m.texMean + np.tensordot(m.texEvec, texCoef, axes = 1)
+        tmesh = mlab.triangular_mesh(fitting[0, :] - img.shape[1]/2, fitting[1, :] - img.shape[0]/2, fitting[2, :], m.face, scalars = np.arange(m.numVertices))
+        tmesh.module_manager.scalar_lut_manager.lut.table = np.c_[(texture.T * 255), 255 * np.ones(m.numVertices)].astype(np.uint8)
+        mlab.draw()
+        mlab.view(view['v0'], view['v1'], view['v2'], view['v3'])
+        mlab.gcf().scene.parallel_projection = True
+        
+        rendering = mlab.screenshot()
+        
+        plt.figure()
+        plt.imshow(rendering)
         
         break
         # Z-buffer: smaller z is closer to image plane (e.g. the nose should have relatively small z values)

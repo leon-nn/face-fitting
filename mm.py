@@ -1021,11 +1021,11 @@ def estCamMat(lm2D, lm3D, cam = 'perspective'):
     
             return w[0] * Elan + w[1] * Escale + w[2] * Eskew
         
-        param = minimize(orthographicCamMat, param, args = (x, X, (1, 1, 1)))
+#        param = minimize(orthographicCamMat, param, args = (x, X, (5, 1, 1)))
 #        param = least_squares(orthographicCamMatLS, param, args = (x, X, (1, 1, 1)), bounds = (np.r_[0, 0, 0, -np.inf*np.ones(5)], np.inf))
-        K = np.array([[param.x[0], param.x[1]], [0 , param.x[2]]])
-        R = rotMat2angle(param.x[3: 6])[:2, :]
-        p8 = np.c_[K.dot(R), param.x[6:]]
+#        K = np.array([[param.x[0], param.x[1]], [0 , param.x[2]]])
+#        R = rotMat2angle(param.x[3: 6])[:2, :]
+#        p8 = np.c_[K.dot(R), param.x[6:]]
         
         Pnorm = np.vstack((p8, np.array([0, 0, 0, 1])))
         P = Tinv.dot(Pnorm).dot(U)
@@ -1100,7 +1100,57 @@ def splitCamMat(P, cam = 'perspective'):
         t = np.linalg.inv(K).dot(P[:, -1])
         
         return K, angle, t
+
+def initialShapeCost2D(P, target, m, sourceLandmarkInds, w = (1, 1)):
+    # Shape eigenvector coefficients
+    idCoef = P[: m.idEval.size]
+    expCoef = P[m.idEval.size: m.idEval.size + m.expEval.size]
     
+    # Insert z translation
+    P = np.r_[P[:-1], 0, P[-1]]
+    
+    # Landmark fitting cost
+    source = generateFace(P, m, ind = sourceLandmarkInds)[:2, :]
+    
+    rlan = (source - target.T).flatten('F')
+    Elan = np.dot(rlan, rlan) / sourceLandmarkInds.size
+    
+    # Regularization cost
+    Ereg = np.sum(idCoef ** 2 / m.idEval) + np.sum(expCoef ** 2 / m.expEval)
+    
+    return w[0] * Elan + w[1] * Ereg
+
+def initialShapeGrad2D(P, target, m, sourceLandmarkInds, w = (1, 1)):
+    # Shape eigenvector coefficients
+    idCoef = P[: m.idEval.size]
+    expCoef = P[m.idEval.size: m.idEval.size + m.expEval.size]
+    
+    # Rotation Euler angles, translation vector, scaling factor
+    angles = P[m.idEval.size + m.expEval.size:][:3]
+    R = rotMat2angle(angles)
+    t = np.r_[P[m.idEval.size + m.expEval.size:][3: 5], 0]
+    s = P[m.idEval.size + m.expEval.size:][5]
+    
+    # The eigenmodel, before rigid transformation and scaling
+    model = m.idMean[:, sourceLandmarkInds] + np.tensordot(m.idEvec[:, sourceLandmarkInds, :], idCoef, axes = 1) + np.tensordot(m.expEvec[:, sourceLandmarkInds, :], expCoef, axes = 1)
+    
+    # After rigid transformation and scaling
+    source = (s*np.dot(R, model) + t[:, np.newaxis])[:2, :]
+    
+    rlan = (source - target.T).flatten('F')
+        
+    drV_dalpha = s*np.tensordot(R, m.idEvec[:, sourceLandmarkInds, :], axes = 1)
+    drV_ddelta = s*np.tensordot(R, m.expEvec[:, sourceLandmarkInds, :], axes = 1)
+    drV_dpsi = s*np.dot(dR_dpsi(angles), model)
+    drV_dtheta = s*np.dot(dR_dtheta(angles), model)
+    drV_dphi = s*np.dot(dR_dphi(angles), model)
+    drV_dt = np.tile(np.eye(2), [sourceLandmarkInds.size, 1])
+    drV_ds = np.dot(R, model)
+    
+    Jlan = np.c_[drV_dalpha[:2, ...].reshape((source.size, idCoef.size), order = 'F'), drV_ddelta[:2, ...].reshape((source.size, expCoef.size), order = 'F'), drV_dpsi[:2, :].flatten('F'), drV_dtheta[:2, :].flatten('F'), drV_dphi[:2, :].flatten('F'), drV_dt, drV_ds[:2, :].flatten('F')]
+    
+    return 2 * (w[0] * np.dot(Jlan.T, rlan) / sourceLandmarkInds.size + w[1] * np.r_[idCoef / m.idEval, expCoef / m.expEval, np.zeros(6)])
+
 def camWithShape(param, m, lm2d, lm3dInd, cam):
     """
     Minimize L2-norm of landmark fitting residuals and regularization terms for shape parameters
