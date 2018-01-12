@@ -105,8 +105,11 @@ def importObj(dirName, shape = 0, dataToImport = ['v', 'vt', 'f'], pose = 20):
         if 'vt' in dataToImport and i == 0:
             textV[:, :] = np.array(vt)
         if 'f' in dataToImport and i == 0:
-            quad[0, :, :] = np.array(f)[:, [0, 3, 6, 9]]
-            quad[1, :, :] = np.array(f)[:, [1, 4, 7, 10]]
+            if len(f[0]) == 12:
+                quad[0, :, :] = np.array(f)[:, [0, 3, 6, 9]]
+                quad[1, :, :] = np.array(f)[:, [1, 4, 7, 10]]
+            elif len(f[0]) == 3:
+                quad = np.array(f)
             
         if 'v' in dataToImport and not singleFile:
             geoV[i, :, :] = np.array(v)

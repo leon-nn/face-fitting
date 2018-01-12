@@ -28,7 +28,6 @@ import matplotlib.image as mpimg
 from mayavi import mlab
 #import visvis as vv
 from pylab import savefig
-import cv2
 from tvtk.api import tvtk
 
 def mlab_imshowColor(im, alpha = 255, **kwargs):
@@ -43,7 +42,9 @@ def mlab_imshowColor(im, alpha = 255, **kwargs):
     colors.from_array(im.reshape(-1, 4))
     m_image = mlab.imshow(np.ones(im.shape[:2][::-1]))
     m_image.actor.input.point_data.scalars = colors
-    
+    m_image.actor.orientation = [0, 0, 0]
+    m_image.actor.position = [0, 0, 0]
+    m_image.actor.scale = [1, 1, 1]
     mlab.draw()
     mlab.show()
 
@@ -175,20 +176,26 @@ if __name__ == "__main__":
 #        plt.scatter(lm[:, 0], lm[:, 1], s = 2, c = 'r')
         
 #        tmesh = mlab.triangular_mesh(fitting[0, :], fitting[1, :], fitting[2, :], m.face, scalars = np.arange(m.numVertices), color = (1, 1, 1))
-        break
-        mlab_imshowColor(img)
         
+        mlab.figure(size = (img.shape[1], img.shape[0]))
+        
+        mlab_imshowColor(img)
+        mlab.gcf().scene._tool_bar.setVisible(False)
+#        mlab.sync_camera()
+#        break
         texture = m.texMean + np.tensordot(m.texEvec, texCoef, axes = 1)
         tmesh = mlab.triangular_mesh(fitting[0, :] - img.shape[1]/2, fitting[1, :] - img.shape[0]/2, fitting[2, :], m.face, scalars = np.arange(m.numVertices))
         tmesh.module_manager.scalar_lut_manager.lut.table = np.c_[(texture.T * 255), 255 * np.ones(m.numVertices)].astype(np.uint8)
         mlab.draw()
-        mlab.view(view['v0'], view['v1'], view['v2'], view['v3'])
+        mlab.view(180, 180, 'auto', 'auto')
         mlab.gcf().scene.parallel_projection = True
-        
+        mlab.gcf().scene.camera.parallel_scale = (img.shape[0] - 1)/2
         rendering = mlab.screenshot()
         
         plt.figure()
         plt.imshow(rendering)
+        
+        
         
         break
         # Z-buffer: smaller z is closer to image plane (e.g. the nose should have relatively small z values)

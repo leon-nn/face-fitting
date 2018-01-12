@@ -5,7 +5,7 @@ Created on Mon Dec  4 15:02:36 2017
 
 @author: leon
 """
-from mm import Bunch, generateFace, exportObj
+from mm import Bunch, generateFace, exportObj, importObj
 import os
 import numpy as np
 import librosa
@@ -165,6 +165,37 @@ if __name__ == "__main__":
     stateSeq_siro = np.load('siroStateSequence.npy')
     stateSeq_kuro = np.load('kuroStateSequence.npy')
     
+    mouthIdx = np.load('../bfmMouthIdx.npy')
+#    mouthVertices = np.zeros((numFrames, mouthIdx.size, 3))
+#    for i in range(numFrames):
+#        fName = '{:0>5}'.format(i + 1)
+#        mouthVertices[i, :] = importObj('shapes/' + fName + '.obj', dataToImport = ['v'])[0][mouthIdx, :].flatten()
+    
+    mouthVertices = np.load('mouthVertices.npy')[:240, :]
+    
+    mouthFace = importObj('mouth.obj', dataToImport = ['f'])[0]
+    mouthVertices2 = mouthVertices.view().reshape((240, 3, mouthIdx.size), order = 'F')
+    tmesh = mlab.triangular_mesh(mouthVertices2[0, 0, :], mouthVertices2[0, 1, :], mouthVertices2[0, 2, :], mouthFace-1, color = (1, 1, 1))
+    mlab.view(0, 0, 'auto', 'auto')
+    mlab.gcf().scene.parallel_projection = True
+    mlab.savefig('test/00001.png', figure = mlab.gcf())
+    tms = tmesh.mlab_source
+    for i in range(1, 240):
+        fName = '{:0>5}'.format(i + 1)
+        tms.set(x = mouthVertices2[i, 0, :], y = mouthVertices2[i, 1, :], z = mouthVertices2[i, 2, :])
+        mlab.savefig('test/' + fName + '.png', figure = mlab.gcf())
+    
+#    frameDifferences = metrics.pairwise.euclidean_distances(mouthVertices)
+#    
+#    plt.figure()
+#    plt.imshow(frameDifferences)
+#    plt.figure()
+#    plt.hist(mouthVertices.flatten(), bins = 'auto')  
+#    plt.figure()
+#    plt.hist(frameDifferences.flatten(), bins = 'auto')    
+#    
+#    nextFrame = np.r_[np.diag(frameDifferences, k = 1), frameDifferences[-1, -2]]
+#    minFrame = np.min(frameDifferences + frameDifferences.max()*np.eye(numFrames), axis = 1)
     
     
     # Calculate pairwise difference between the frames as transition probabilities
@@ -174,22 +205,25 @@ if __name__ == "__main__":
 #        videoVec[i, :] = io.imread('orig/' + fName + '.png', as_grey = True).flatten()
         
 #    frameDifferences = metrics.pairwise.euclidean_distances(videoVec)
-    frameDifferences = np.load('frameDistanceMat.npy')
+#    frameDifferences1 = np.load('frameDistanceMat.npy')
+    
+#    plt.figure()
+#    plt.imshow(frameDifferences1)
 #    plt.figure()
 #    plt.hist(frameDifferences.flatten(), bins = 'auto')
-    thres = np.min(frameDifferences + frameDifferences.max()*np.eye(numFrames), axis = 1) + 30
+#    thres = np.min(frameDifferences + frameDifferences.max()*np.eye(numFrames), axis = 1) + 30
     
-    transitionableFrames = frameDifferences < thres[:, np.newaxis]
-    np.fill_diagonal(transitionableFrames, False)
-    rowInd, colInd = np.nonzero(transitionableFrames)
-    numTransitionableFrames = transitionableFrames.sum(1)
+#    transitionableFrames = frameDifferences < thres[:, np.newaxis]
+#    np.fill_diagonal(transitionableFrames, False)
+#    rowInd, colInd = np.nonzero(transitionableFrames)
+#    numTransitionableFrames = transitionableFrames.sum(1)
     
-    plt.figure()
-    plt.hist(numTransitionableFrames, bins = numTransitionableFrames.max() - 1)
+#    plt.figure()
+#    plt.hist(numTransitionableFrames, bins = numTransitionableFrames.max() - 1)
     
-    A = csc_matrix((np.exp(-0.1*frameDifferences[transitionableFrames]), (rowInd, colInd)), shape = (numFrames, numFrames))
+#    A = csc_matrix((np.exp(-0.1*frameDifferences[transitionableFrames]), (rowInd, colInd)), shape = (numFrames, numFrames))
     
-    A.data /= np.take(A.sum(1).A1, A.indices)
+#    A.data /= np.take(A.sum(1).A1, A.indices)
     
 #    plt.figure()
 #    plt.hist(A.data, bins = 100)
@@ -199,18 +233,18 @@ if __name__ == "__main__":
     
     # Find the frames that match to each clustered 3DMM state and set a uniform PDF for these frames as the emission probabilities
 #    state2frame = [None] * N
-    B = 0.01*np.ones((numFrames, N))
+#    B = 0.01*np.ones((numFrames, N))
 #    for i in range(N):
 #        state2frame[i] = np.nonzero(stateLabels == i)[0].tolist()
 #        B[state2frame[i], i] = 1. / len(state2frame[i])
     
-    B[np.arange(numFrames), stateLabels] = 1
-    B /= B.sum(1)[:, np.newaxis]
+#    B[np.arange(numFrames), stateLabels] = 1
+#    B /= B.sum(1)[:, np.newaxis]
     
 #    B = np.ones((numFrames, N)) / N
     
     # Use a uniform PDF over all frames as the initial distribution
-    pi = np.ones(numFrames) / numFrames
+#    pi = np.ones(numFrames) / numFrames
     
     # Set up the HMM
 #    model = hmm.MultinomialHMM(n_components = numFrames)
