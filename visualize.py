@@ -29,6 +29,7 @@ def mlab_imshowColor(im, alpha = 255, **kwargs):
     alpha is a single number or a ndarray with dim (n*m) and scale (0->255]
     **kwargs is passed onto mayavi.mlab.imshow(..., **kwargs)
     """
+    # Homogenous coordinate conversion
     im = np.concatenate((im, alpha * np.ones((im.shape[0], im.shape[1], 1), dtype = np.uint8)), axis = -1)
     colors = tvtk.UnsignedCharArray()
     colors.from_array(im.reshape(-1, 4))

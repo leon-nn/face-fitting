@@ -177,25 +177,40 @@ if __name__ == "__main__":
         
 #        tmesh = mlab.triangular_mesh(fitting[0, :], fitting[1, :], fitting[2, :], m.face, scalars = np.arange(m.numVertices), color = (1, 1, 1))
         
-        mlab.figure(size = (img.shape[1], img.shape[0]))
+        # Create new Mayavi scene for rendering
+        mlab.options.offscreen = False
+        fig = mlab.figure(size = (img.shape[1], img.shape[0]))
+        scene = fig.scene
+        screenSize = scene.get_size()
         
+        # Render the original image
         mlab_imshowColor(img)
-        mlab.gcf().scene._tool_bar.setVisible(False)
-#        mlab.sync_camera()
-#        break
-        texture = m.texMean + np.tensordot(m.texEvec, texCoef, axes = 1)
+        
+        # Render the 3DMM
         tmesh = mlab.triangular_mesh(fitting[0, :] - img.shape[1]/2, fitting[1, :] - img.shape[0]/2, fitting[2, :], m.face, scalars = np.arange(m.numVertices))
+        
+        # Add texture to the 3DMM
+        texture = m.texMean + np.tensordot(m.texEvec, texCoef, axes = 1)
         tmesh.module_manager.scalar_lut_manager.lut.table = np.c_[(texture.T * 255), 255 * np.ones(m.numVertices)].astype(np.uint8)
-        mlab.draw()
+        
+        # Remove the default Mayavi lighting
+        tmesh.actor.property.lighting = False
+        
+        # Remove the Mayavi toolbar in the figure window for consistancy with offscreen rendering
+        scene._tool_bar.setVisible(False)
+        
+        # Change the view of the scene to look at the x-y image plane
         mlab.view(180, 180, 'auto', 'auto')
-        mlab.gcf().scene.parallel_projection = True
-        mlab.gcf().scene.camera.parallel_scale = (img.shape[0] - 1)/2
+        
+        # Set a parallel projection for the scene camera
+        scene.parallel_projection = True
+        scene.camera.parallel_scale = (img.shape[0] - 1)/2
+        
+        # Save the scene into a NumPy array
         rendering = mlab.screenshot()
         
         plt.figure()
         plt.imshow(rendering)
-        
-        
         
         break
         # Z-buffer: smaller z is closer to image plane (e.g. the nose should have relatively small z values)
