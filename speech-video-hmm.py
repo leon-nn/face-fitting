@@ -20,6 +20,59 @@ import matplotlib.image as mpimg
 from skimage import io
 import matplotlib.pyplot as plt
 from scipy.sparse import csc_matrix, issparse
+import tvtk
+
+def mlab_imshowColor(im, alpha = 255, **kwargs):
+    """
+    Plot a color image with mayavi.mlab.imshow.
+    im is a ndarray with dim (n, m, 3) and scale (0->255]
+    alpha is a single number or a ndarray with dim (n*m) and scale (0->255]
+    **kwargs is passed onto mayavi.mlab.imshow(..., **kwargs)
+    """
+    # Homogenous coordinate conversion
+    im = np.concatenate((im, alpha * np.ones((im.shape[0], im.shape[1], 1), dtype = np.uint8)), axis = -1)
+    colors = tvtk.UnsignedCharArray()
+    colors.from_array(im.reshape(-1, 4))
+    m_image = mlab.imshow(np.ones(im.shape[:2][::-1]))
+    m_image.actor.input.point_data.scalars = colors
+    
+    mlab.draw()
+    mlab.show()
+
+    return
+
+def animate(v, f, saveDir, t = None, alpha = 1):
+    
+    # Create the save directory for the images if it doesn't exist
+    if not saveDir.endswith('/'):
+        saveDir += '/'
+    if not os.path.exists(saveDir):
+        os.makedirs(saveDir)
+    
+    # Render the mesh
+    if t is None:
+        tmesh = mlab.triangular_mesh(v[0, 0, :], v[0, 1, :], v[0, 2, :], f-1, scalars = np.arange(v.shape[2]), color = (1, 1, 1))
+    
+    # Add texture if given
+    else:
+        tmesh = mlab.triangular_mesh(v[0, 0, :], v[0, 1, :], v[0, 2, :], f-1, scalars = np.arange(v.shape[2]))
+        if t.shape[1] is not 3:
+            t = t.T
+        tmesh.module_manager.scalar_lut_manager.lut.table = np.c_[(t * 255), alpha * 255 * np.ones(v.shape[2])].astype(np.uint8)
+#        tmesh.actor.pro2perty.lighting = False
+        
+    # Change viewport to x-y plane and enforce orthographic projection
+    mlab.view(0, 0, 'auto', 'auto')
+    
+    mlab.gcf().scene.parallel_projection = True
+    
+    # Save the first frame, then loop through the rest and save them
+    mlab.savefig(saveDir + '00001.png', figure = mlab.gcf())
+    tms = tmesh.mlab_source
+    for i in range(1, v.shape[0]):
+        fName = '{:0>5}'.format(i + 1)
+        tms.set(x = v[i, 0, :], y = v[i, 1, :], z = v[i, 2, :])
+        mlab.savefig(saveDir + fName + '.png', figure = mlab.gcf())
 
 if __name__ == "__main__":
 
@@ -82,40 +135,35 @@ if __name__ == "__main__":
     
     mouthVertices = np.load('mouthVertices.npy')
     
-    N = 150
+    N = 100
     kShapes = KMeans(n_clusters = N)
     kShapes.fit(mouthVertices)
     
     stateShapes = kShapes.cluster_centers_
     stateLabels = kShapes.labels_
     
-    stateShapes2 = stateShapes.view().reshape((N, 3, mouthIdx.size), order = 'F')
-    tmesh = mlab.triangular_mesh(stateShapes2[0, 0, :], stateShapes2[0, 1, :], stateShapes2[0, 2, :], mouthFace-1, color = (1, 1, 1))
-    mlab.view(0, 0, 'auto', 'auto')
-    mlab.gcf().scene.parallel_projection = True
-    mlab.savefig('mouthStateShapes/00001.png', figure = mlab.gcf())
-    tms = tmesh.mlab_source
-    for i in range(1, N):
-        fName = '{:0>5}'.format(i + 1)
-        tms.set(x = stateShapes2[i, 0, :], y = stateShapes2[i, 1, :], z = stateShapes2[i, 2, :])
-        mlab.savefig('mouthStateShapes/' + fName + '.png', figure = mlab.gcf())
+#    stateShapes2 = stateShapes.view().reshape((N, 3, mouthIdx.size), order = 'F')
+#    tmesh = mlab.triangular_mesh(stateShapes2[0, 0, :], stateShapes2[0, 1, :], stateShapes2[0, 2, :], mouthFace-1, color = (1, 1, 1))
+#    mlab.view(0, 0, 'auto', 'auto')
+#    mlab.gcf().scene.parallel_projection = True
+#    mlab.savefig('mouthStateShapes/00001.png', figure = mlab.gcf())
+#    tms = tmesh.mlab_source
+#    for i in range(1, N):
+#        fName = '{:0>5}'.format(i + 1)
+#        tms.set(x = stateShapes2[i, 0, :], y = stateShapes2[i, 1, :], z = stateShapes2[i, 2, :])
+#        mlab.savefig('mouthStateShapes/' + fName + '.png', figure = mlab.gcf())
         
     
-#    # Find and cluster the features of the video in model-space
-#    m = Bunch(np.load('../models/bfm2017.npz'))
-#    m.idEvec = m.idEvec[:, :, :80]
-#    m.idEval = m.idEval[:80]
-#    m.expEvec = m.expEvec[:, :, :76]
-#    m.expEval = m.expEval[:76]
-#    m.texEvec = m.texEvec[:, :, :80]
-#    m.texEval = m.texEval[:80]
-#    
-#    param = np.load('paramRTS2Orig.npy')
-#    #for frame in np.arange(1, numFrames + 1):
-#    #    shape = generateFace(np.r_[param[frame, :-7], np.zeros(6), 1], m)
-#    
-#    #tmesh = mlab.triangular_mesh(shape[0, :], shape[1, :], shape[2, :], m.face, scalars = np.arange(m.numVertices), color = (1, 1, 1))
-#    #view = mlab.view()
+    # Find and cluster the features of the video in model-space
+    m = Bunch(np.load('../models/bfm2017.npz'))
+    m.idEvec = m.idEvec[:, :, :80]
+    m.idEval = m.idEval[:80]
+    m.expEvec = m.expEvec[:, :, :76]
+    m.expEval = m.expEval[:76]
+    m.texEvec = m.texEvec[:, :, :80]
+    m.texEval = m.texEval[:80]
+    
+    param = np.load('paramRTS2Orig.npy')
 #    
 #    N = 150
 #    X = param[:, 80: -7]
@@ -166,104 +214,90 @@ if __name__ == "__main__":
 #        fName = '{:0>5}'.format(shape + 1)
 #        exportObj(generateFace(np.r_[param[-1, :80], stateShapes[stateSeq_siro[shape], :], np.zeros(6), 1], m), f = m.face, fNameOut = 'stateShapes/' + fName)
 #    
-#    selectedFrames = np.zeros(stateSeq_kuro.size, dtype = int)
-#    scaler = StandardScaler()
-#    normalizedRTS = scaler.fit_transform(param[:, -7:])
-#    for i in range(stateSeq_kuro.size):
-#        # Find the video frames that match to the current shape state
-#        frames = np.argwhere(stateLabels == stateSeq_kuro[i]).squeeze()
-#        
-#        # From these frames, find the frame that is closest to the i-th video frame in terms of rotation, translation, and scale
-#        candidateFramesRTS = normalizedRTS[frames, :]
-#        currentFrameRTS = normalizedRTS[i, :]
-#        
-#        NN = NearestNeighbors(n_neighbors = 1, metric = 'l2')
-#        
-#        NN.fit(candidateFramesRTS)
-#        distance, ind = NN.kneighbors(currentFrameRTS.reshape(1, -1))
-#        
-#        selectedFrames[i] = frames[ind.squeeze()]
+    selectedFrames = np.zeros(stateSeq_kuro.size, dtype = int)
+    scaler = StandardScaler()
+    normalizedRTS = scaler.fit_transform(param[:, -7:])
+    for i in range(stateSeq_kuro.size):
+        # Find the video frames that match to the current shape state
+        frames = np.argwhere(stateLabels == stateSeq_kuro[i]).squeeze()
+        
+        # From these frames, find the frame that is closest to the i-th video frame in terms of rotation, translation, and scale
+        candidateFramesRTS = normalizedRTS[frames, :]
+        currentFrameRTS = normalizedRTS[i, :]
+        
+        NN = NearestNeighbors(n_neighbors = 1, metric = 'l2')
+        
+        NN.fit(candidateFramesRTS)
+        distance, ind = NN.kneighbors(currentFrameRTS.reshape(1, -1))
+        
+        selectedFrames[i] = frames[ind.squeeze()]
 #    np.save('kuroSelectedFrames', selectedFrames)
     
     """
     2nd HMM for temporal consistency
     """
     
-    N = 150
-    stateLabels = np.load('siroGroundTruth.npy')
-    stateSeq_siro = np.load('siroStateSequence.npy')
-    stateSeq_kuro = np.load('kuroStateSequence.npy')
-    
-#    mouthFace = importObj('mouth.obj', dataToImport = ['f'])[0]
-#    mouthVertices2 = mouthVertices.view().reshape((240, 3, mouthIdx.size), order = 'F')
-#    tmesh = mlab.triangular_mesh(mouthVertices2[0, 0, :], mouthVertices2[0, 1, :], mouthVertices2[0, 2, :], mouthFace-1, color = (1, 1, 1))
-#    mlab.view(0, 0, 'auto', 'auto')
-#    mlab.gcf().scene.parallel_projection = True
-#    mlab.savefig('test/00001.png', figure = mlab.gcf())
-#    tms = tmesh.mlab_source
-#    for i in range(1, 240):
-#        fName = '{:0>5}'.format(i + 1)
-#        tms.set(x = mouthVertices2[i, 0, :], y = mouthVertices2[i, 1, :], z = mouthVertices2[i, 2, :])
-#        mlab.savefig('test/' + fName + '.png', figure = mlab.gcf())
-    
+#    N = 150
+#    stateLabels = np.load('siroGroundTruth.npy')
+#    stateSeq_siro = np.load('siroStateSequence.npy')
+#    stateSeq_kuro = np.load('kuroStateSequence.npy')
+
     frameDifferences = metrics.pairwise.euclidean_distances(mouthVertices)
-#    
+
 #    plt.figure()
 #    plt.imshow(frameDifferences)
 #    plt.figure()
 #    plt.hist(mouthVertices.flatten(), bins = 'auto')
-    plt.figure()
-    plt.hist(frameDifferences.flatten(), bins = 'auto')
+#    plt.figure()
+#    plt.hist(frameDifferences.flatten(), bins = 'auto')
 #    
-    nextFrame = np.r_[np.diag(frameDifferences, k = 1), frameDifferences[-1, -2]]
+#    nextFrame = np.r_[np.diag(frameDifferences, k = 1), frameDifferences[-1, -2]]
     minFrame = np.min(frameDifferences + frameDifferences.max()*np.eye(numFrames), axis = 1)
     thres = minFrame + 200
-    
-    # Calculate pairwise difference between the frames as transition probabilities
+#    
+#    # Calculate pairwise difference between the frames as transition probabilities
 #    videoVec = np.empty((numFrames, mpimg.imread('orig/00001.png').size//3))
 #    for i in range(numFrames):
 #        fName = '{:0>5}'.format(i + 1)
 #        videoVec[i, :] = io.imread('orig/' + fName + '.png', as_grey = True).flatten()
-        
+#        
 #    frameDifferences = metrics.pairwise.euclidean_distances(videoVec)
 #    frameDifferences1 = np.load('frameDistanceMat.npy')
-    
+#    
 #    plt.figure()
 #    plt.imshow(frameDifferences1)
 #    plt.figure()
 #    plt.hist(frameDifferences.flatten(), bins = 'auto')
 #    thres = np.min(frameDifferences + frameDifferences.max()*np.eye(numFrames), axis = 1) + 30
-    
+#    
     transitionableFrames = frameDifferences < thres[:, np.newaxis]
     np.fill_diagonal(transitionableFrames, False)
     rowInd, colInd = np.nonzero(transitionableFrames)
     numTransitionableFrames = transitionableFrames.sum(1)
-    
+#    
 #    plt.figure()
 #    plt.hist(numTransitionableFrames, bins = numTransitionableFrames.max() - 1)
-    
+#    
     A = csc_matrix((np.exp(-0.1*frameDifferences[transitionableFrames]), (rowInd, colInd)), shape = (numFrames, numFrames))
     
     A.data /= np.take(A.sum(1).A1, A.indices)
-    
+#    
 #    plt.figure()
 #    plt.hist(A.data, bins = 100)
 #    
-    plt.figure()
-    plt.imshow(A.toarray())
-    
+#    plt.figure()
+#    plt.imshow(A.toarray())
+#    
     # Find the frames that match to each clustered 3DMM state and set a uniform PDF for these frames as the emission probabilities
 #    state2frame = [None] * N
     B = 0.01*np.ones((numFrames, N))
 #    for i in range(N):
 #        state2frame[i] = np.nonzero(stateLabels == i)[0].tolist()
 #        B[state2frame[i], i] = 1. / len(state2frame[i])
-    
+#    
     B[np.arange(numFrames), stateLabels] = 1
     B /= B.sum(1)[:, np.newaxis]
-    
-#    B = np.ones((numFrames, N)) / N
-    
+#    
     # Use a uniform PDF over all frames as the initial distribution
     pi = np.ones(numFrames) / numFrames
     
@@ -272,19 +306,16 @@ if __name__ == "__main__":
     model.startprob_ = pi
     model.transmat_ = A.toarray()
     model.emissionprob_ = B
-#    
-#    
+    
     frames = model.predict(stateSeq_kuro.reshape(-1, 1))
 #    np.save('kuroSelectedFrames2.npy', frames)
     
-#    mouthFace = importObj('mouth.obj', dataToImport = ['f'])[0]
-#    mouthVertices2 = mouthVertices.view().reshape((numFrames, 3, mouthIdx.size), order = 'F')
-    tmesh = mlab.triangular_mesh(mouthVertices2[frames[0], 0, :], mouthVertices2[frames[0], 1, :], mouthVertices2[frames[0], 2, :], mouthFace-1, color = (1, 1, 1))
-    mlab.view(0, 0, 'auto', 'auto')
-    mlab.gcf().scene.parallel_projection = True
-    mlab.savefig('test/00001.png', figure = mlab.gcf())
-    tms = tmesh.mlab_source
-    for i in range(1, 240):
-        fName = '{:0>5}'.format(i + 1)
-        tms.set(x = mouthVertices2[frames[i], 0, :], y = mouthVertices2[frames[i], 1, :], z = mouthVertices2[frames[i], 2, :])
-        mlab.savefig('test/' + fName + '.png', figure = mlab.gcf())
+    # Animations
+    s = stateShapes.reshape((N, 3, mouthIdx.size), order = 'F')
+    v = mouthVertices.reshape((numFrames, 3, mouthIdx.size), order = 'F')
+    animate(v[:240], mouthFace, 'color/1_origSiroFrames', m.texMean[:, mouthIdx])
+    animate(s[stateLabels[:240]], mouthFace, 'color/2_siroKmeansStateSeq', m.texMean[:, mouthIdx])
+    animate(s[stateSeq_siro[:240]], mouthFace, 'color/3_siroHMMStateSeq', m.texMean[:, mouthIdx])
+    animate(s[stateSeq_kuro[:240]], mouthFace, 'color/4_kuroHMMStateSeq', m.texMean[:, mouthIdx])
+    animate(v[selectedFrames[:240]], mouthFace, 'color/5_closestFramesToKuroFromSiroViaRTS', m.texMean[:, mouthIdx])
+    animate(v[frames[:240]], mouthFace, 'color/6_closestFramesToKuroFromSiroViaHMM', m.texMean[:, mouthIdx])
