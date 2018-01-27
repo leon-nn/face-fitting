@@ -23,25 +23,19 @@ import matplotlib.pyplot as plt
 from scipy.sparse import csc_matrix, issparse
 import networkx as nx
 
-if __name__ == "__main__":
-
-    os.chdir('/home/leon/f2f-fitting/obama/')
-    numFramesSiro = 2882 #3744 #2260
-    numFramesKuro = 2041
-    fps = 24
-    
+def speechProc(siroFile, siroNumFrames, siroFPS, kuroFile, kuroNumFrames):
     # Load audio tracks, pre-emphasize, and create feature vectors from mfcc, rmse, and deltas of mfcc
     nfft = 1024
     hopSamples = 512
     
-    wav_kuro, fs_kuro = librosa.load('kuro.wav', sr=44100)
+    wav_kuro, fs_kuro = librosa.load(kuroFile, sr=44100)
     wav_kuro = np.r_[wav_kuro[0], wav_kuro[1:] - 0.97 * wav_kuro[:-1]]
     mfcc_kuro = librosa.feature.mfcc(y = wav_kuro, sr = fs_kuro, n_mfcc = 13, n_fft = nfft, hop_length = hopSamples)
     mfcc_kuro[0, :] = librosa.feature.rmse(y = wav_kuro, n_fft = nfft, hop_length = hopSamples)
     delta_kuro = librosa.feature.delta(mfcc_kuro)
     mfcc_kuro = np.r_[mfcc_kuro, delta_kuro]
     
-    wav_siro, fs_siro = librosa.load('siro.wav', sr=44100)
+    wav_siro, fs_siro = librosa.load(siroFile, sr=44100)
     wav_siro = np.r_[wav_siro[0], wav_siro[1:] - 0.97 * wav_siro[:-1]]
     mfcc_siro = librosa.feature.mfcc(y = wav_siro, sr = fs_siro, n_mfcc = 13, n_fft = nfft, hop_length = hopSamples)
     mfcc_siro[0, :] = librosa.feature.rmse(y = wav_siro, n_fft = nfft, hop_length = hopSamples)
@@ -49,7 +43,7 @@ if __name__ == "__main__":
     mfcc_siro = np.r_[mfcc_siro, delta_siro]
     
     # Find mfccs that are nearest to video frames in time
-    t_video = np.linspace(0, numFramesSiro / fps, numFramesSiro)
+    t_video = np.linspace(0, siroNumFrames / siroFPS, siroNumFrames)
     
     t_audio_siro = np.linspace(0, mfcc_siro.shape[1] * hopSamples / fs_siro, mfcc_siro.shape[1])
     t_audio_kuro = np.linspace(0, mfcc_kuro.shape[1] * hopSamples / fs_kuro, mfcc_kuro.shape[1])
@@ -61,15 +55,25 @@ if __name__ == "__main__":
     mfcc_siro_sampled = mfcc_siro[:, ind.squeeze()]
     
     NN.fit(t_audio_kuro.reshape(-1, 1))
-    distance, ind = NN.kneighbors(t_video[:2041].reshape(-1, 1))
+    distance, ind = NN.kneighbors(t_video[:kuroNumFrames].reshape(-1, 1))
     mfcc_kuro_sampled = mfcc_kuro[:, ind.squeeze()]
+    
+    return mfcc_siro_sampled, mfcc_kuro_sampled
+
+if __name__ == "__main__":
+
+    os.chdir('/home/leon/f2f-fitting/obama/')
+    numFramesSiro = 2882 #3744 #2260
+    numFramesKuro = 2041
+    
+    siroAudioVec, kuroAudioVec = speechProc('siro.wav', numFramesSiro, 24, 'kuro.wav', numFramesKuro)
     
     # Find siro samples that are nearest to each kuro sample
     k = 20
     NN = NearestNeighbors(n_neighbors = k, metric = 'l2')
     
-    NN.fit(mfcc_siro_sampled.T)
-    distance, ind = NN.kneighbors(mfcc_kuro_sampled.T)
+    NN.fit(siroAudioVec.T)
+    distance, ind = NN.kneighbors(kuroAudioVec.T)
     
     # Calculate edge weights for candidate frames
     scaler = StandardScaler()
@@ -90,6 +94,20 @@ if __name__ == "__main__":
             lm[i, ...] = np.array([l[0] for l in json.load(fd)], dtype = int).squeeze()[:, :2]
             
     # Get landmark locations on 3DMM
+    # Load 3DMM
+    m = Bunch(np.load('../models/bfm2017.npz'))
+    m.idEvec = m.idEvec[:, :, :80]
+    m.idEval = m.idEval[:80]
+    m.expEvec = m.expEvec[:, :, :76]
+    m.expEval = m.expEval[:76]
+    m.texEvec = m.texEvec[:, :, :80]
+    m.texEval = m.texEval[:80]
+    
+    sourceLandmarkInds = np.array([16203, 16235, 16260, 16290, 27061, 22481, 22451, 22426, 22394, 8134, 8143, 8151, 8156, 6986, 7695, 8167, 8639, 9346, 2345, 4146, 5180, 6214, 4932, 4158, 10009, 11032, 12061, 13872, 12073, 11299, 5264, 6280, 7472, 8180, 8888, 10075, 11115, 9260, 8553, 8199, 7845, 7136, 7600, 8190, 8780, 8545, 8191, 7837, 4538, 11679])
+    sourceLmPairs = sourceLandmarkInds[lmPairs]
+    uniqueSourceLm, uniqueInv = np.unique(sourceLmPairs, return_inverse = True)
+    
+    faceLmPairs = generateFace(param[0, :], m, ind = sourceLmPairs.flat)
     
     mouthIdx = np.load('../bfmMouthIdx.npy')
     mouthVertices = np.load('mouthVertices.npy')
@@ -104,7 +122,16 @@ if __name__ == "__main__":
         # Add another term for pixel landmark proximity
         
     # Transition between candidate frames should have similar 3DMM landmarks and expression parameters
+    mmLm = np.empty((numFramesSiro, 3, uniqueSourceLm.size))
+    for t in range(numFramesSiro):
+        mmLm[t] = generateFace(param[t, :], m, ind = uniqueSourceLm)
+    mmLm = mmLm[..., uniqueInv[::2]] - mmLm[..., uniqueInv[1::2]]
+    mmLmNorm = np.linalg.norm(mmLm, axis = 1)
     
+    Dm = np.empty((numFramesKuro - 1, k, k))
+    for t in range(numFramesKuro - 1):
+        for c1 in range(k):
+            Dm[t, c1] = np.linalg.norm(mmLmNorm[ind[t, c1], :] - mmLmNorm[ind[t+1, :], :], axis = 1)**2
     
     # Create DAG and assign edge weights from distance matrix
     G = nx.DiGraph()
