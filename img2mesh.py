@@ -14,6 +14,7 @@ Created on Fri Nov 17 15:52:46 2017
 @author: leon
 """
 
+import openglRender
 from mm import Bunch, onpick3, exportObj, generateFace, rotMat2angle, initialShapeCost2D, initialShapeGrad2D, estCamMat, splitCamMat, camWithShape, dR_dpsi, dR_dtheta, dR_dphi, calcNormals, shBasis
 #from visualize import mlab_imshowColor
 from time import clock
@@ -212,6 +213,14 @@ if __name__ == "__main__":
         plt.figure()
         plt.imshow(rendering)
         
+        meshData = np.r_[fitting.T, texture.T].astype(np.float32)
+        indexData = m.face.astype(np.uint16)
+        openglRender.initializeContext(img.shape[1], img.shape[0], meshData, indexData)
+        openglRender.render(indexData)
+        rendering2 = openglRender.grabRendering(img.shape[1], img.shape[0])
+        
+        plt.figure()
+        plt.imshow(rendering2)
         break
         # Z-buffer: smaller z is closer to image plane (e.g. the nose should have relatively small z values)
         vertex2pixel = fitting[:2, :].T.astype(int)

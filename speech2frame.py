@@ -58,7 +58,7 @@ def speechProc(siroFile, siroNumFrames, siroFPS, kuroFile, kuroNumFrames):
     distance, ind = NN.kneighbors(t_video[:kuroNumFrames].reshape(-1, 1))
     mfcc_kuro_sampled = mfcc_kuro[:, ind.squeeze()]
     
-    return mfcc_siro_sampled, mfcc_kuro_sampled
+    return mfcc_siro_sampled, mfcc_kuro_sampled, t_video
 
 if __name__ == "__main__":
 
@@ -66,7 +66,7 @@ if __name__ == "__main__":
     numFramesSiro = 2882 #3744 #2260
     numFramesKuro = 2041
     
-    siroAudioVec, kuroAudioVec = speechProc('siro.wav', numFramesSiro, 24, 'kuro.wav', numFramesKuro)
+    siroAudioVec, kuroAudioVec, t_video = speechProc('siro.wav', numFramesSiro, 24, 'kuro.wav', numFramesKuro)
     
     # Find siro samples that are nearest to each kuro sample
     k = 20
@@ -107,19 +107,15 @@ if __name__ == "__main__":
     sourceLmPairs = sourceLandmarkInds[lmPairs]
     uniqueSourceLm, uniqueInv = np.unique(sourceLmPairs, return_inverse = True)
     
-    faceLmPairs = generateFace(param[0, :], m, ind = sourceLmPairs.flat)
-    
     mouthIdx = np.load('../bfmMouthIdx.npy')
     mouthVertices = np.load('mouthVertices.npy')
     mouthVertices = mouthVertices.reshape((numFramesSiro, mouthIdx.size, 3))
     
     # Enforce similarity in similarity transform parameters from candidate frames to original video frames
-    Dp = np.empty((k, numFramesKuro))
+    Dp = np.empty((numFramesKuro, k))
     for q in range(numFramesKuro):
         c = ind[q, :]
-        Dp[:, q] = np.linalg.norm(trans[q, :] - trans[c, :], axis = 1) + np.linalg.norm(R[q, ...] - R[c, ...], axis = (1, 2))
-        
-        # Add another term for pixel landmark proximity
+        Dp[q, :] = np.linalg.norm(trans[q, :] - trans[c, :], axis = 1) + np.linalg.norm(R[q, ...] - R[c, ...], axis = (1, 2))
         
     # Transition between candidate frames should have similar 3DMM landmarks and expression parameters
     mmLm = np.empty((numFramesSiro, 3, uniqueSourceLm.size))
@@ -129,9 +125,14 @@ if __name__ == "__main__":
     mmLmNorm = np.linalg.norm(mmLm, axis = 1)
     
     Dm = np.empty((numFramesKuro - 1, k, k))
+    weights = np.empty((numFramesKuro - 1, k, k))
     for t in range(numFramesKuro - 1):
         for c1 in range(k):
-            Dm[t, c1] = np.linalg.norm(mmLmNorm[ind[t, c1], :] - mmLmNorm[ind[t+1, :], :], axis = 1)**2
+            Dm[t, c1] = np.linalg.norm(mmLmNorm[ind[t, c1], :] - mmLmNorm[ind[t+1, :], :], axis = 1) + np.linalg.norm(expCoef[ind[t, c1]] - expCoef[ind[t+1, :], :], axis = 1)
+            
+#            np.exp(-np.fabs(t_video[ind[t, c1]] - t_video[ind[t+1, :]])**2)
+            
+            weights[t, c1] = Dm[t, c1] + Dp[t, c1] + Dp[t+1, :]
     
     # Create DAG and assign edge weights from distance matrix
     G = nx.DiGraph()
@@ -140,6 +141,16 @@ if __name__ == "__main__":
         right = np.arange((i+1)*k, (i+2)*k)
         G.add_nodes_from(left)
         G.add_nodes_from(right)
-        G.add_edges_from((u, v) for u in left for v in right)
+        G.add_weighted_edges_from((u, v, weights[i, u - i*k, v - (i+1)*k]) for u in left for v in right)
     
-    # Use Dijkstra shortest path 
+    # Use A* shortest path algorithms
+    astarLength = np.empty((k, k))
+    for s in range(k):
+        for t in range(k):
+            astarLength[s, t] = nx.astar_path_length(G, s, right[t])
+    
+    s, t = np.unravel_index(astarLength.argmin(), (k, k))
+    optPath = nx.astar_path(G, s, right[t])
+    optPath = np.unravel_index(optPath, (numFramesKuro, k))
+    optPath = ind[optPath[0], optPath[1]]
+    
