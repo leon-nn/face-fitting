@@ -16,40 +16,77 @@ Created on Fri Nov 17 15:52:46 2017
 
 import openglRender
 from mm import Bunch, onpick3, exportObj, generateFace, rotMat2angle, initialShapeCost2D, initialShapeGrad2D, estCamMat, splitCamMat, camWithShape, dR_dpsi, dR_dtheta, dR_dphi, calcNormals, shBasis
-#from visualize import mlab_imshowColor
 from time import clock
 import glob, os, re, json
 import numpy as np
-from scipy.interpolate import interpn
 from scipy.optimize import minimize, check_grad, least_squares
-from scipy.linalg import rq
 from sklearn.neighbors import NearestNeighbors
+from mpl_toolkits.mplot3d import Axes3D
 import matplotlib.pyplot as plt
 import matplotlib.image as mpimg
-from mayavi import mlab
-#import visvis as vv
 from pylab import savefig
-from tvtk.api import tvtk
 
-def mlab_imshowColor(im, alpha = 255, **kwargs):
+def calcZBuffer(vertexCoord):
     """
-    Plot a color image with mayavi.mlab.imshow.
-    im is a ndarray with dim (n, m, 3) and scale (0->255]
-    alpha is a single number or a ndarray with dim (n*m) and scale (0->255]
-    **kwargs is passed onto mayavi.mlab.imshow(..., **kwargs)
+    Assumes that the nose will have smaller z values
     """
-    im = np.concatenate((im, alpha * np.ones((im.shape[0], im.shape[1], 1), dtype = np.uint8)), axis = -1)
-    colors = tvtk.UnsignedCharArray()
-    colors.from_array(im.reshape(-1, 4))
-    m_image = mlab.imshow(np.ones(im.shape[:2][::-1]))
-    m_image.actor.input.point_data.scalars = colors
-    m_image.actor.orientation = [0, 0, 0]
-    m_image.actor.position = [0, 0, 0]
-    m_image.actor.scale = [1, 1, 1]
-    mlab.draw()
-    mlab.show()
+    # Transpose input if necessary so that dimensions are along the columns
+    if vertexCoord.shape[0] == 3:
+        vertexCoord = vertexCoord.T
+    
+    # Given an orthographically projected 3D mesh, convert the x and y vertex coordinates to integers to represent pixel coordinates
+    vertex2pixel = vertexCoord[:, :2].astype(int)
+    
+    # Find the unique pixel coordinates from above, the first vertex they map to, and the count of vertices that map to each pixel coordinate
+    pixelCoord, pixel2vertexInd, pixelCounts = np.unique(vertex2pixel, return_index = True, return_counts = True, axis = 0)
+    
+    # Initialize the z-buffer to have as many elements as there are unique pixel coordinates
+    zBuffer = np.empty(pixel2vertexInd.size, dtype = int)
+    
+    # Loop through each unique pixel coordinate...
+    for i in range(pixel2vertexInd.size):
+        # If a given pixel coordinate only has 1 vertex, then the z-buffer will represent that vertex
+        if pixelCounts[i] == 1:
+            zBuffer[i] = pixel2vertexInd[i]
+        
+        # If a given pixel coordinate has more than 1 vertex...
+        else:
+            # Find the indices for the vertices that map to the pixel coordinate
+            candidateVertexInds = np.where((vertex2pixel[:, 0] == pixelCoord[i, 0]) & (vertex2pixel[:, 1] == pixelCoord[i, 1]))[0]
+            
+            # Of the vertices, see which one has the smallest z coordinate and assign that vertex to the pixel coordinate in the z-buffer
+            zBuffer[i] = candidateVertexInds[np.argmin(fitting[2, candidateVertexInds])]
+    
+    return zBuffer, pixelCoord
 
-    return
+def textureCost(texCoef, x, mask, m, w = (1, 1)):
+    """
+    Energy formulation for fitting texture
+    """
+    # Photo-consistency
+    Xcol = (m.texMean[:, mask] + np.tensordot(m.texEvec[:, mask, :], texCoef, axes = 1)).T
+    
+    r = (Xcol - x).flatten()
+    
+    Ecol = np.dot(r, r) / mask.size
+    
+    # Statistical regularization
+    Ereg = np.sum(texCoef ** 2 / m.texEval)
+    
+    return w[0] * Ecol + w[1] * Ereg
+
+def textureGrad(texCoef, x, mask, m, w = (1, 1)):
+    """
+    Jacobian for texture energy
+    """
+    Xcol = (m.texMean[:, mask] + np.tensordot(m.texEvec[:, mask, :], texCoef, axes = 1)).T
+    
+    r = (Xcol - x).flatten()
+    
+    # Jacobian
+    J = m.texEvec[:, mask, :].reshape((m.texMean[:, mask].size, m.texEval.size), order = 'F')
+    
+    return 2 * (w[0] * np.dot(J.T, r) / mask.size + w[1] * texCoef / m.texEval)
 
 if __name__ == "__main__":
     
@@ -62,8 +99,6 @@ if __name__ == "__main__":
     m.idEval = m.idEval[:80]
     m.expEvec = m.expEvec[:, :, :76]
     m.expEval = m.expEval[:76]
-    m.texEvec = m.texEvec[:, :, :80]
-    m.texEval = m.texEval[:80]
     
     targetLandmarkInds = np.array([0, 1, 2, 3, 8, 13, 14, 15, 16, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 61, 62, 63, 65, 66, 67, 68, 69])
     sourceLandmarkInds = np.array([16203, 16235, 16260, 16290, 27061, 22481, 22451, 22426, 22394, 8134, 8143, 8151, 8156, 6986, 7695, 8167, 8639, 9346, 2345, 4146, 5180, 6214, 4932, 4158, 10009, 11032, 12061, 13872, 12073, 11299, 5264, 6280, 7472, 8180, 8888, 10075, 11115, 9260, 8553, 8199, 7845, 7136, 7600, 8190, 8780, 8545, 8191, 7837, 4538, 11679])
@@ -94,7 +129,7 @@ if __name__ == "__main__":
         lm = lm[targetLandmarkInds, :2]
         
         # Plot the landmarks on the image
-        img = (mpimg.imread(fNameImgOrig) * 255).astype(np.uint8)
+        img = mpimg.imread(fNameImgOrig)
 #        plt.figure()
 #        plt.imshow(img)
 #        plt.scatter(lm[:, 0], lm[:, 1], s = 2)
@@ -121,152 +156,89 @@ if __name__ == "__main__":
             idCoef = np.zeros(m.idEval.size)
             expCoef = np.zeros(m.expEval.size)
             texCoef = np.zeros(m.texEval.size)
+#            texCoef = np.random.rand(m.texEval.size)
             param = np.r_[np.zeros(m.idEval.size + m.expEval.size + 6), 1]
         
         # Get the 3D xyz values of the 3DMM landmarks
         lm3D = generateFace(param, m, ind = sourceLandmarkInds).T
         
         # Estimate the camera projection matrix from the landmark correspondences
-        P = estCamMat(lm, lm3D, cam)
+        P = estCamMat(lm, lm3D, 'orthographic')
         
-        # Even more minimization with projection matrix to get initial shape parameters
-#        initCamShape = minimize(camWithShape, np.r_[P.flatten(), idCoef, expCoef], args = (m, lm, sourceLandmarkInds, cam))
+        # Factor the camera projection matrix into the intrinsic camera parameters and the rotation/translation similarity transform parameters
+        s, angles, t = splitCamMat(P, 'orthographic')
         
-        # Separate variates in parameter vector
-        if cam == 'orthographic':
-            # Factor the camera projection matrix into the intrinsic camera parameters and the rotation/translation similarity transform parameters
-            s, angles, t = splitCamMat(P, cam)
-            
-            param = np.r_[idCoef, expCoef, angles, t, s]
-            
-            initFit = minimize(initialShapeCost2D, param, args = (lm, m, sourceLandmarkInds, (wLan, wReg)), jac = initialShapeGrad2D)
-            param = initFit.x
-            
-#            K, R = rq(P[:, :3], mode = 'economic')
-#            R = np.vstack((R[0, :], R[1, :], np.cross(R[0, :], R[1, :])))
-#            angles = rotMat2angle(R)
-#            s = np.fabs(np.diag(K)).mean()
-#            t = P[:, 3]
-#            R0 = rotMat2angle(angles)
-            
-            # Project 3D model into 2D plane
-            modelBeforeProj = generateFace(np.r_[param[:idCoef.size + expCoef.size], np.zeros(6), 1], m)
-            fitting = generateFace(np.r_[param[:-1], 0, param[-1]], m)
-#            fitting1 = P.dot(np.vstack((modelBeforeProj, np.ones(m.numVertices))))
-#            fitting2 = s*(rotMat2angle(angles).dot(modelBeforeProj) + np.r_[t, 0][:, np.newaxis])
-            
-        elif cam == 'perspective':
-            P = initCamShape.x[:12].reshape((3, 4))
-            idCoef = initCamShape.x[12: 12 + m.idEval.size]
-            expCoef = initCamShape.x[12 + m.idEval.size:]
+        param = np.r_[idCoef, expCoef, angles, t, s]
         
-            # Factor the camera projection matrix into the intrinsic camera parameters and the rotation/translation similarity transform parameters
-            K, angles, t = splitCamMat(P, cam)
-            
-            param = np.r_[idCoef, expCoef, angles, t, 1]
-            fitting = generateFace(param, m)
-            modelBeforeProj = generateFace(param, m)
-            fitting = K.dot(modelBeforeProj)
+        initFit = minimize(initialShapeCost2D, param, args = (lm, m, sourceLandmarkInds, (wLan, wReg)), jac = initialShapeGrad2D)
+        param = initFit.x
         
+        # Project 3D model into 2D plane
+        fitting = generateFace(np.r_[param[:-1], 0, param[-1]], m)
+            
         # Plot the projected 3D model on top of the input RGB image
-        plt.figure()
-        plt.imshow(img)
+#        fig = plt.figure()
+#        ax = fig.add_subplot(111, projection='3d')
+#        ax.scatter(fitting[0, :], fitting[1, :], fitting[2, :])
+        
+#        plt.figure()
+#        plt.imshow(img)
 #        plt.scatter(fitting[0, :], fitting[1, :], s = 0.1, c = 'g')
-        plt.scatter(fitting[0, sourceLandmarkInds], fitting[1, sourceLandmarkInds], s = 3, c = 'b')
-#        plt.scatter(fitting1[0, sourceLandmarkInds], fitting1[1, sourceLandmarkInds], s = 3, c = 'b')
+#        plt.scatter(fitting[0, sourceLandmarkInds], fitting[1, sourceLandmarkInds], s = 3, c = 'b')
 #        plt.scatter(lm[:, 0], lm[:, 1], s = 2, c = 'r')
         
-#        tmesh = mlab.triangular_mesh(fitting[0, :], fitting[1, :], fitting[2, :], m.face, scalars = np.arange(m.numVertices), color = (1, 1, 1))
-        
-        # Create new Mayavi scene for rendering
-        mlab.options.offscreen = False
-        fig = mlab.figure(size = (img.shape[1], img.shape[0]))
-        scene = fig.scene
-        screenSize = scene.get_size()
-        
-        # Render the original image
-        mlab_imshowColor(img)
-        
-        # Render the 3DMM
-        tmesh = mlab.triangular_mesh(fitting[0, :] - img.shape[1]/2, fitting[1, :] - img.shape[0]/2, fitting[2, :], m.face, scalars = np.arange(m.numVertices))
-        
-        # Add texture to the 3DMM
-        texture = m.texMean + np.tensordot(m.texEvec, texCoef, axes = 1)
-        tmesh.module_manager.scalar_lut_manager.lut.table = np.c_[(texture.T * 255), 255 * np.ones(m.numVertices)].astype(np.uint8)
-        
-        # Remove the default Mayavi lighting
-        tmesh.actor.property.lighting = False
-        
-        # Remove the Mayavi toolbar in the figure window for consistancy with offscreen rendering
-        scene._tool_bar.setVisible(False)
-        
-        # Change the view of the scene to look at the x-y image plane
-        mlab.view(180, 180, 'auto', 'auto')
-        
-        # Set a parallel projection for the scene camera
-        scene.parallel_projection = True
-        scene.camera.parallel_scale = (img.shape[0] - 1)/2
-        
-        # Save the scene into a NumPy array
-        rendering = mlab.screenshot()
-        
-        plt.figure()
-        plt.imshow(rendering)
-        
+        # Rendering of initial shape
+        texture = m.texMean
         meshData = np.r_[fitting.T, texture.T].astype(np.float32)
         indexData = m.face.astype(np.uint16)
         openglRender.initializeContext(img.shape[1], img.shape[0], meshData, indexData)
         openglRender.render(indexData)
+        rendering = openglRender.grabRendering(img.shape[1], img.shape[0])
+        
+        plt.figure()
+        plt.imshow(rendering)
+        
+        zBuffer, pixelCoord = calcZBuffer(fitting)
+        
+#        mask = np.zeros(img.shape[:2], dtype = bool)
+#        mask[pixelCoord[:, 1], pixelCoord[:, 0]] = True
+#        plt.figure()
+#        plt.imshow(mask)
+        
+        """
+        """
+        def initialTextureCost(texCoef, img, vertexCoord, m):
+            vertexColor = m.texMean + np.tensordot(m.texEvec, texCoef, axes = 1)
+            
+            openglRender.updateVertexBuffer(np.r_[vertexCoord.T, vertexColor.T].astype(np.float32))
+            openglRender.resetFramebufferObject()
+            openglRender.render(m.face.astype(np.uint16))
+            rendering = openglRender.grabRendering(img.shape[1], img.shape[0])
+            
+            mask = rendering.any(axis = -1)
+            
+            #
+#            Ecol = np.linalg.norm((rendering[mask] - img[mask]), axis = 1).sum() / mask.sum()
+            r = (rendering[mask] - img[mask]).flatten()
+            Ecol = np.dot(r, r) / mask.sum()
+            
+            # Statistical regularization
+            Ereg = np.sum(texCoef ** 2 / m.texEval)
+            
+            return 100 * Ecol + Ereg
+        
+        initTex = minimize(initialTextureCost, texCoef, args = (img, fitting, m), method = 'cg')
+        texCoef = initTex['x']
+        texture = m.texMean + np.tensordot(m.texEvec, texCoef, axes = 1)
+        
+        openglRender.updateVertexBuffer(np.r_[fitting.T, texture.T].astype(np.float32))
+        openglRender.resetFramebufferObject()
+        openglRender.render(m.face.astype(np.uint16))
         rendering2 = openglRender.grabRendering(img.shape[1], img.shape[0])
         
         plt.figure()
         plt.imshow(rendering2)
         break
-        # Z-buffer: smaller z is closer to image plane (e.g. the nose should have relatively small z values)
-        vertex2pixel = fitting[:2, :].T.astype(int)
-        pixelInd, ind, counts = np.unique(vertex2pixel, return_index = True, return_counts = True, axis = 0)
-        zBuffer = np.empty(ind.size, dtype = int)
-        for i in range(ind.size):
-            if counts[i] == 1:
-                zBuffer[i] = ind[i]
-            else:
-                inds = np.where((vertex2pixel[:, 0] == pixelInd[i, 0]) & (vertex2pixel[:, 1] == pixelInd[i, 1]))[0]
-                zBuffer[i] = inds[np.argmin(modelBeforeProj[2, inds])]
-        
-        #mask = np.zeros(img.shape[:2], dtype = bool)
-        #mask.flat[np.ravel_multi_index(vertex2pixel[zBuffer, ::-1].T, img.shape[:2])] = True
-        #plt.figure()
-        #plt.imshow(mask)
-        """
-        """
-        def textureCost(texCoef, x, mask, m):
-            """
-            Energy formulation for fitting texture
-            """
-            # Photo-consistency
-            Xcol = (m.texMean[:, mask] + np.tensordot(m.texEvec[:, mask, :], texCoef, axes = 1)).T
-            
-            r = (Xcol - x).flatten()
-            
-            Ecol = np.dot(r, r) / mask.size
-            
-            # Statistical regularization
-            Ereg = np.sum(texCoef ** 2 / m.texEval)
-            
-            return Ecol + Ereg
-        
-        def textureGrad(texCoef, x, mask, m):
-            """
-            Jacobian for texture energy
-            """
-            Xcol = (m.texMean[:, mask] + np.tensordot(m.texEvec[:, mask, :], texCoef, axes = 1)).T
-            
-            r = (Xcol - x).flatten()
-            
-            # Jacobian
-            J = m.texEvec[:, mask, :].reshape((m.texMean[:, mask].size, m.texEval.size), order = 'F')
-            
-            return 2 * (np.dot(J.T, r) / mask.size + texCoef / m.texEval)
         
         def fitter(param, x, vis, m, lm2d, lm3d):
             """
@@ -304,29 +276,25 @@ if __name__ == "__main__":
             
             return Ecol + 10*Elan + Ereg
         
-        x = np.reshape(img, (np.prod(img.shape[:2]), 3))
-        x = x[np.ravel_multi_index(vertex2pixel[zBuffer, ::-1].T, img.shape[:2]), :]
-        param2 = minimize(textureCost, texCoef, args = (x, zBuffer, m), method = 'cg', jac = textureGrad)
-        check_grad(textureCost, textureGrad, texCoef, x, zBuffer, m)
-        #param2 = minimize(fitter, np.r_[K[:2, :].flatten(), angles, t, idCoef, expCoef, texCoef], args = (x, m, landmarkPixelInd, landmarkInds3D))
+        imgMasked = img[pixelCoord[:, 1], pixelCoord[:, 0]]
+        initTex = minimize(textureCost, texCoef, args = (imgMasked, zBuffer, m, (100, 1)), jac = textureGrad)
+#        check_grad(textureCost, textureGrad, texCoef, imgMasked, zBuffer, m)
         
-        texCoef = param2['x']
-        #K2 = np.reshape(param2.x[:6], (2, 3))
-        #angles2 = param2.x[6: 9]
-        #R2 = rotMat2angle(angles2)
-        #t2 = param2.x[9: 12]
-        #idCoef2 = param2.x[12: 12 + m.idEval.size]
-        #expCoef2 = param2.x[12 + m.idEval.size: 12 + m.idEval.size + m.expEval.size]
-        #texCoef = param2.x[12 + m.idEval.size + m.expEval.size:]
+        texCoef = initTex['x']
         
         # Project 3D model into 2D plane
-        #fitting = K2.dot(R2.dot(m.idMean + np.tensordot(m.idEvec, idCoef2, axes = 1) + np.tensordot(m.expEvec, expCoef2, axes = 1)) + t2[:, np.newaxis])
         texture = m.texMean + np.tensordot(m.texEvec, texCoef, axes = 1)
         #exportObj(shape.T, c = texture.T, f = m.face, fNameOut = 'texTest')
-        tmesh = mlab.triangular_mesh(shape[0, :], shape[1, :], shape[2, :], m.face, scalars = np.arange(m.numVertices))
-        tmesh.module_manager.scalar_lut_manager.lut.table = np.c_[(texture.T * 255), 255 * np.ones(m.numVertices)].astype(np.uint8)
-        mlab.draw()
         
+        meshData = np.r_[fitting.T, texture.T].astype(np.float32)
+        indexData = m.face.astype(np.uint16)
+        openglRender.initializeContext(img.shape[1], img.shape[0], meshData, indexData)
+        openglRender.render(indexData)
+        rendering = openglRender.grabRendering(img.shape[1], img.shape[0])
+        
+        plt.figure()
+        plt.imshow(rendering)
+        break
         '''
         Optimization
         '''

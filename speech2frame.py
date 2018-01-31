@@ -23,6 +23,39 @@ import matplotlib.pyplot as plt
 from scipy.sparse import csc_matrix, issparse
 import networkx as nx
 
+def animate(v, f, saveDir, t = None, alpha = 1):
+    
+    # Create the save directory for the images if it doesn't exist
+    if not saveDir.endswith('/'):
+        saveDir += '/'
+    if not os.path.exists(saveDir):
+        os.makedirs(saveDir)
+    
+    # Render the mesh
+    if t is None:
+        tmesh = mlab.triangular_mesh(v[0, 0, :], v[0, 1, :], v[0, 2, :], f-1, scalars = np.arange(v.shape[2]), color = (1, 1, 1))
+    
+    # Add texture if given
+    else:
+        tmesh = mlab.triangular_mesh(v[0, 0, :], v[0, 1, :], v[0, 2, :], f-1, scalars = np.arange(v.shape[2]))
+        if t.shape[1] is not 3:
+            t = t.T
+        tmesh.module_manager.scalar_lut_manager.lut.table = np.c_[(t * 255), alpha * 255 * np.ones(v.shape[2])].astype(np.uint8)
+#        tmesh.actor.pro2perty.lighting = False
+        
+    # Change viewport to x-y plane and enforce orthographic projection
+    mlab.view(0, 0, 'auto', 'auto')
+    
+    mlab.gcf().scene.parallel_projection = True
+    
+    # Save the first frame, then loop through the rest and save them
+    mlab.savefig(saveDir + '00001.png', figure = mlab.gcf())
+    tms = tmesh.mlab_source
+    for i in range(1, v.shape[0]):
+        fName = '{:0>5}'.format(i + 1)
+        tms.set(x = v[i, 0, :], y = v[i, 1, :], z = v[i, 2, :])
+        mlab.savefig(saveDir + fName + '.png', figure = mlab.gcf())
+        
 def speechProc(siroFile, siroNumFrames, siroFPS, kuroFile, kuroNumFrames):
     # Load audio tracks, pre-emphasize, and create feature vectors from mfcc, rmse, and deltas of mfcc
     nfft = 1024
@@ -64,7 +97,7 @@ if __name__ == "__main__":
 
     os.chdir('/home/leon/f2f-fitting/obama/')
     numFramesSiro = 2882 #3744 #2260
-    numFramesKuro = 2041
+    numFramesKuro = 240 #2041
     
     siroAudioVec, kuroAudioVec, t_video = speechProc('siro.wav', numFramesSiro, 24, 'kuro.wav', numFramesKuro)
     
@@ -73,7 +106,7 @@ if __name__ == "__main__":
     NN = NearestNeighbors(n_neighbors = k, metric = 'l2')
     
     NN.fit(siroAudioVec.T)
-    distance, ind = NN.kneighbors(kuroAudioVec.T)
+    distance, ind = NN.kneighbors(siroAudioVec[:, :240].T)
     
     # Calculate edge weights for candidate frames
     scaler = StandardScaler()
@@ -100,8 +133,6 @@ if __name__ == "__main__":
     m.idEval = m.idEval[:80]
     m.expEvec = m.expEvec[:, :, :76]
     m.expEval = m.expEval[:76]
-    m.texEvec = m.texEvec[:, :, :80]
-    m.texEval = m.texEval[:80]
     
     sourceLandmarkInds = np.array([16203, 16235, 16260, 16290, 27061, 22481, 22451, 22426, 22394, 8134, 8143, 8151, 8156, 6986, 7695, 8167, 8639, 9346, 2345, 4146, 5180, 6214, 4932, 4158, 10009, 11032, 12061, 13872, 12073, 11299, 5264, 6280, 7472, 8180, 8888, 10075, 11115, 9260, 8553, 8199, 7845, 7136, 7600, 8190, 8780, 8545, 8191, 7837, 4538, 11679])
     sourceLmPairs = sourceLandmarkInds[lmPairs]
@@ -109,7 +140,6 @@ if __name__ == "__main__":
     
     mouthIdx = np.load('../bfmMouthIdx.npy')
     mouthVertices = np.load('mouthVertices.npy')
-    mouthVertices = mouthVertices.reshape((numFramesSiro, mouthIdx.size, 3))
     
     # Enforce similarity in similarity transform parameters from candidate frames to original video frames
     Dp = np.empty((numFramesKuro, k))
@@ -154,3 +184,6 @@ if __name__ == "__main__":
     optPath = np.unravel_index(optPath, (numFramesKuro, k))
     optPath = ind[optPath[0], optPath[1]]
     
+    mouthFace = importObj('mouth.obj', dataToImport = ['f'])[0]
+    v = mouthVertices.reshape((numFramesSiro, 3, mouthIdx.size), order = 'F')
+    animate(v[optPath[:240]], mouthFace, 'graphSiro', m.texMean[:, mouthIdx])

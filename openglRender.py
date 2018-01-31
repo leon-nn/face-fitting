@@ -162,7 +162,7 @@ def initializeFramebufferObject(width, height, img = None):
     glBindTexture(GL_TEXTURE_2D, renderedTexture)
     
     # Attach a texture 'img' (which should be of unsigned bytes) to the texture buffer. If you don't want a specific texture, you can just replace 'img' with 'None'.
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE, img)
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_RGB, GL_FLOAT, img)
     
     # Does some filtering on the texture in the texture buffer
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST)
@@ -248,7 +248,7 @@ def initializeVertexArray(vertexDim = 3, numVertices = 28588):
     # Unset the VAO as the current object in the OpenGL context
     glBindVertexArray(0)
 
-def initializeContext(width, height, meshData, indexData):
+def initializeContext(width, height, meshData, indexData, img = None):
     # You can use any means to initialize an OpenGL context (e.g. GLUT), but since we're rendering offscreen to an FBO, we don't need to bother to display, which is why we hide the GLUT window.
     glutInit()
     window = glutCreateWindow('Merely creating an OpenGL context...')
@@ -279,7 +279,7 @@ def initializeContext(width, height, meshData, indexData):
     
     # Initialize OpenGL objects
     initializeVertexBuffer(meshData, indexData)
-    initializeFramebufferObject(width, height)
+    initializeFramebufferObject(width, height, img)
     initializeVertexArray()
 
 def render(indexData):
@@ -298,27 +298,31 @@ def render(indexData):
     # Being proper
     glBindVertexArray(0)
     glUseProgram(0)
+    glBindFramebuffer(GL_FRAMEBUFFER, 0)
 
 def grabRendering(width, height):
+    # Use our initialized FBO instead of the default GLUT framebuffer
+    glBindFramebuffer(GL_FRAMEBUFFER, framebufferObject)
+    
     # Configure how we store the pixels in memory for our subsequent reading of the FBO to store the rendering into memory. The second argument specifies that our pixels will be in bytes.
-    glPixelStorei(GL_PACK_ALIGNMENT, 1)
+#    glPixelStorei(GL_PACK_ALIGNMENT, 1)
     
     # Set the color buffer that we want to read from. The GL_COLORATTACHMENT0 target is where we assigned our texture buffer in the FBO.
     glReadBuffer(GL_COLOR_ATTACHMENT0)
     
     # Now we do the actual reading, noting that we read the pixels in the buffer as unsigned bytes to be consistent will how they are stored
-    data = glReadPixels(0, 0, width, height, GL_RGB, GL_UNSIGNED_BYTE)
+    data = glReadPixels(0, 0, width, height, GL_RGB, GL_FLOAT)
+    glBindFramebuffer(GL_FRAMEBUFFER, 0)
     
     # Convert the unsigned bytes to a NumPy array for whatever needs you may have
-    return np.frombuffer(data, dtype = np.uint8).reshape(height, width, 3)
+    return np.frombuffer(data, dtype = np.float32).reshape(height, width, 3)
 
 if __name__ == '__main__':
     
     frame = 0
     img = Image.open('obama/orig/%05d.png' % (frame + 1))
     width, height = img.size
-    
-    
+    img = np.array(img)
     
     vertexCoords, indexData = importObj('obama/shapes/%05d.obj' % (frame + 1), dataToImport = ['v', 'f'])
     indexData -= 1
@@ -341,38 +345,36 @@ if __name__ == '__main__':
     numVertices = vertexCoords.shape[0]
     meshData = np.r_[vertexCoords, vertexColors].astype(np.float32)
     indexData = indexData.astype(np.uint16)
-    img = img.tobytes()
-#    img = None
     
     vertexDim = 3
     numVertices = vertexCoords.shape[0]
     
-    initializeContext()
+    initializeContext(width, height, meshData, indexData, img.tobytes())
     
     # Then we render offscreen to the FBO
-    render()
+#    render(indexData)
     
-    rendering = grabRendering()
+    rendering = grabRendering(width, height)
     plt.figure()
     plt.imshow(rendering)
     
-    for frame in range(1, 52, 10):
-        img = Image.open('obama/orig/%05d.png' % (frame + 1))
-        img = img.tobytes()
-        
-        vertexCoords = importObj('obama/shapes/%05d.obj' % (frame + 1), dataToImport = ['v'])[0]
-        eulerAngles = RTS[frame, :3]
-        T = RTS[frame, 3: 6]
-        S = RTS[frame, 6]
-        
-        vertexCoords = S * np.dot(vertexCoords, rotMat2angle(eulerAngles).T) + T
-        
-        meshData = np.r_[vertexCoords, vertexColors].astype(np.float32)
-        
-        updateVertexBuffer()
-        resetFramebufferObject()
-        render()
-        
-        rendering = grabRendering()
-        plt.figure()
-        plt.imshow(rendering)
+#    for frame in range(1, 52, 10):
+#        img = Image.open('obama/orig/%05d.png' % (frame + 1))
+#        img = img.tobytes()
+#        
+#        vertexCoords = importObj('obama/shapes/%05d.obj' % (frame + 1), dataToImport = ['v'])[0]
+#        eulerAngles = RTS[frame, :3]
+#        T = RTS[frame, 3: 6]
+#        S = RTS[frame, 6]
+#        
+#        vertexCoords = S * np.dot(vertexCoords, rotMat2angle(eulerAngles).T) + T
+#        
+#        meshData = np.r_[vertexCoords, vertexColors].astype(np.float32)
+#        
+#        updateVertexBuffer()
+#        resetFramebufferObject()
+#        render()
+#        
+#        rendering = grabRendering()
+#        plt.figure()
+#        plt.imshow(rendering)
