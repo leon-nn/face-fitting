@@ -15,11 +15,11 @@ Created on Fri Nov 17 15:52:46 2017
 """
 
 import openglRender
-from mm import Bunch, onpick3, exportObj, generateFace, rotMat2angle, initialShapeCost2D, initialShapeGrad2D, estCamMat, splitCamMat, camWithShape, dR_dpsi, dR_dtheta, dR_dphi, calcNormals, shBasis
+from mm import Bunch, onpick3, exportObj, generateFace, rotMat2angle, initialShapeCost2D, initialShapeGrad2D, estCamMat, splitCamMat, camWithShape, dR_dpsi, dR_dtheta, dR_dphi, calcNormals, shBasis, sh9, sph2cart
 from time import clock
 import glob, os, re, json
 import numpy as np
-from scipy.optimize import minimize, check_grad, least_squares
+from scipy.optimize import minimize, check_grad, least_squares, nnls
 from sklearn.neighbors import NearestNeighbors
 from mpl_toolkits.mplot3d import Axes3D
 import matplotlib.pyplot as plt
@@ -95,10 +95,10 @@ if __name__ == "__main__":
     
     # Load 3DMM
     m = Bunch(np.load('../../models/bfm2017.npz'))
-    m.idEvec = m.idEvec[:, :, :80]
-    m.idEval = m.idEval[:80]
-    m.expEvec = m.expEvec[:, :, :76]
-    m.expEval = m.expEval[:76]
+#    m.idEvec = m.idEvec[:, :, :80]
+#    m.idEval = m.idEval[:80]
+#    m.expEvec = m.expEvec[:, :, :76]
+#    m.expEval = m.expEval[:76]
     
     targetLandmarkInds = np.array([0, 1, 2, 3, 8, 13, 14, 15, 16, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 61, 62, 63, 65, 66, 67, 68, 69])
     sourceLandmarkInds = np.array([16203, 16235, 16260, 16290, 27061, 22481, 22451, 22426, 22394, 8134, 8143, 8151, 8156, 6986, 7695, 8167, 8639, 9346, 2345, 4146, 5180, 6214, 4932, 4158, 10009, 11032, 12061, 13872, 12073, 11299, 5264, 6280, 7472, 8180, 8888, 10075, 11115, 9260, 8553, 8199, 7845, 7136, 7600, 8190, 8780, 8545, 8191, 7837, 4538, 11679])
@@ -109,6 +109,7 @@ if __name__ == "__main__":
     
     view = np.load('../viewInFrame.npz')
     
+    wCol = 1000
     wLan = 10
     wReg = 1
     
@@ -172,6 +173,8 @@ if __name__ == "__main__":
         
         initFit = minimize(initialShapeCost2D, param, args = (lm, m, sourceLandmarkInds, (wLan, wReg)), jac = initialShapeGrad2D)
         param = initFit.x
+        idCoef = param[:m.idEval.size]
+        expCoef = param[m.idEval.size: m.idEval.size+m.expEval.size]
         
         # Project 3D model into 2D plane
         fitting = generateFace(np.r_[param[:-1], 0, param[-1]], m)
@@ -218,7 +221,7 @@ if __name__ == "__main__":
             mask = rendering.any(axis = -1)
             
             #
-#            Ecol = np.linalg.norm((rendering[mask] - img[mask]), axis = 1).sum() / mask.sum()
+            Ecol = np.linalg.norm((rendering[mask] - img[mask]), axis = 1).sum() / mask.sum()
             r = (rendering[mask] - img[mask]).flatten()
             Ecol = np.dot(r, r) / mask.sum()
             
@@ -227,57 +230,21 @@ if __name__ == "__main__":
             
             return 100 * Ecol + Ereg
         
-        initTex = minimize(initialTextureCost, texCoef, args = (img, fitting, m), method = 'cg')
-        texCoef = initTex['x']
-        texture = m.texMean + np.tensordot(m.texEvec, texCoef, axes = 1)
-        
-        openglRender.updateVertexBuffer(np.r_[fitting.T, texture.T].astype(np.float32))
-        openglRender.resetFramebufferObject()
-        openglRender.render(m.face.astype(np.uint16))
-        rendering2 = openglRender.grabRendering(img.shape[1], img.shape[0])
-        
-        plt.figure()
-        plt.imshow(rendering2)
-        break
-        
-        def fitter(param, x, vis, m, lm2d, lm3d):
-            """
-            Energy formulation for fitting 3D face model to 2D image
-            """
-            K = np.reshape(param[:6], (2, 3))
-            angle = param[6: 9]
-            R = rotMat2angle(angle)
-            t = param[9: 12]
-            shCoef = param[12: 39]
-            idCoef = param[39: 39 + m.idEval.size]
-            expCoef = param[39 + m.idEval.size: 39 + m.idEval.size + m.expEval.size]
-            texCoef = param[39 + m.idEval.size + m.expEval.size:]
-            
-            # Photo-consistency
-            shape = R.dot(m.idMean + np.tensordot(m.idEvec, idCoef, axes = 1) + np.tensordot(m.expEvec, expCoef, axes = 1)) + t[:, np.newaxis]
-            
-            texture = m.texMean[:, vis] + np.tensordot(m.texEvec[:, vis, :], texCoef, axes = 1)
-            
-            normals = calcNormals(R, m, idCoef, expCoef)
-            shBases = shBasis(texture, normals)
-            
-            texture[0, :] = np.tensordot(shBases[0, :, :], shCoef[:9], axes = 1)
-            texture[1, :] = np.tensordot(shBases[1, :, :], shCoef[9: 18], axes = 1)
-            texture[2, :] = np.tensordot(shBases[2, :, :], shCoef[18: 27], axes = 1)
-            
-            Ecol = np.linalg.norm(x - texture[:, ind].T, axis = 1).sum() / ind.size
-            
-            # Feature alignment (landmarks)
-            Xlan = K.dot(R.dot(m.idMean[:, lm3d] + np.tensordot(m.idEvec[:, lm3d, :], idCoef, axes = 1) + np.tensordot(m.expEvec[:, lm3d, :], expCoef, axes = 1)) + t[:, np.newaxis])
-            Elan = np.linalg.norm(lm2d - Xlan.T, axis = 1).sum() / lm3d.size
-            
-            # Statistical regularization
-            Ereg = np.sum(idCoef ** 2 / m.idEval) + np.sum(expCoef ** 2 / m.expEval) + np.sum(texCoef ** 2 / m.texEval)
-            
-            return Ecol + 10*Elan + Ereg
+#        initTex = minimize(initialTextureCost, texCoef, args = (img, fitting, m), method = 'powell')
+#        texCoef = initTex['x']
+#        texture = m.texMean + np.tensordot(m.texEvec, texCoef, axes = 1)
+#        
+#        openglRender.updateVertexBuffer(np.r_[fitting.T, texture.T].astype(np.float32))
+#        openglRender.resetFramebufferObject()
+#        openglRender.render(m.face.astype(np.uint16))
+#        rendering2 = openglRender.grabRendering(img.shape[1], img.shape[0])
+#        
+#        plt.figure()
+#        plt.imshow(rendering2)
+#        break
         
         imgMasked = img[pixelCoord[:, 1], pixelCoord[:, 0]]
-        initTex = minimize(textureCost, texCoef, args = (imgMasked, zBuffer, m, (100, 1)), jac = textureGrad)
+        initTex = minimize(textureCost, texCoef, args = (imgMasked, zBuffer, m, (wCol, wReg)), jac = textureGrad)
 #        check_grad(textureCost, textureGrad, texCoef, imgMasked, zBuffer, m)
         
         texCoef = initTex['x']
@@ -294,7 +261,142 @@ if __name__ == "__main__":
         
         plt.figure()
         plt.imshow(rendering)
+        
+        def genTexture(vertexCoord, texParam, m):
+            
+            texCoef = texParam[:m.texEval.size]
+            lightCoef = texParam[m.texEval.size:].reshape(9, 3)
+            
+            texture = m.texMean + np.tensordot(m.texEvec, texCoef, axes = 1)
+            
+            # Evaluate spherical harmonics at face shape normals
+            vertexNorms = calcNormals(vertexCoord, m)
+            B = sh9(vertexNorms[:, 0], vertexNorms[:, 1], vertexNorms[:, 2])
+            
+            norm = np.r_[np.pi, np.repeat(2*np.pi/3, 3), np.repeat(np.pi/4, 5)]
+            
+            B *= norm[..., np.newaxis]
+            
+            I = np.empty((3, m.numVertices))
+            for c in range(3):
+                I[c, :] = np.dot(lightCoef[:, c], B * texture[c, :])
+            
+            return I
+        
+        # Evaluate spherical harmonics at face shape normals
+        vertexNorms = calcNormals(fitting, m)
+        B = sh9(vertexNorms[:, 0], vertexNorms[:, 1], vertexNorms[:, 2])
+        
+        norm = np.r_[np.pi, np.repeat(2*np.pi/3, 3), np.repeat(np.pi/4, 5)]
+        
+        B *= norm[..., np.newaxis]
+        
+        I = np.empty((3, 9, m.numVertices))
+        l = np.empty((9, 3))
+        for c in range(3):
+            I[c, ...] = B * texture[c, :]
+            l[:, c] = nnls(I[c, :, zBuffer], imgMasked[:, c])[0]
+        
+        texParam = np.r_[texCoef, l.flatten()]
+        textureWithLighting = genTexture(fitting, texParam, m)
+        
+        meshData = np.r_[fitting.T, textureWithLighting.T].astype(np.float32)
+        indexData = m.face.astype(np.uint16)
+        openglRender.initializeContext(img.shape[1], img.shape[0], meshData, indexData)
+        openglRender.render(indexData)
+        rendering = openglRender.grabRendering(img.shape[1], img.shape[0])
+        
+        plt.figure()
+        plt.imshow(rendering)
+            
+        def textureLightingCost(texParam, x, mask, B, m, w = (1, 1), option = 'tl', constCoef = None):
+            """
+            Energy formulation for fitting texture and spherical harmonic lighting coefficients
+            """
+            if option is 'tl':
+                texCoef = texParam[:m.texEval.size]
+                lightCoef = texParam[m.texEval.size:].reshape(9, 3)
+            elif option is 't':
+                texCoef = texParam
+                lightCoef = constCoef.reshape(9, 3)
+            elif option is 'l':
+                texCoef = constCoef
+                lightCoef = texParam.reshape(9, 3)
+            
+            # Photo-consistency
+            texture = (m.texMean[:, mask] + np.tensordot(m.texEvec[:, mask, :], texCoef, axes = 1))
+            
+            I = np.empty((texture.shape[0], mask.size))
+            for c in range(texture.shape[0]):
+                I[c, :] = np.dot(lightCoef[:, c], B[:, mask] * texture[c, :])
+            
+            r = (I.T - x).flatten()
+            
+#            Ecol = np.dot(r, r) / mask.size
+            Ecol = np.dot(r, r)
+            
+            # Statistical regularization
+            Ereg = np.sum(texCoef ** 2 / m.texEval)
+            
+            if option is 'l':
+                return w[0] * Ecol
+            else:
+                return w[0] * Ecol + w[1] * Ereg
+        
+        def textureLightingGrad(texParam, x, mask, B, m, w = (1, 1), option = 'tl', constCoef = None):
+            """
+            Jacobian for texture and spherical harmonic lighting coefficients
+            """
+            if option is 'tl':
+                texCoef = texParam[:m.texEval.size]
+                lightCoef = texParam[m.texEval.size:].reshape(9, 3)
+            elif option is 't':
+                texCoef = texParam
+                lightCoef = constCoef.reshape(9, 3)
+            elif option is 'l':
+                texCoef = constCoef
+                lightCoef = texParam.reshape(9, 3)
+            
+            # Photo-consistency
+            texture = (m.texMean[:, mask] + np.tensordot(m.texEvec[:, mask, :], texCoef, axes = 1))
+            
+            J_texCoef = np.empty((3*mask.size, m.texEval.size))
+            J_lightCoef = np.empty((27, mask.size))
+            I = np.empty((3, mask.size))
+            for c in range(3):
+                J_texCoef[c*mask.size: (c+1)*mask.size, :] = np.tensordot(lightCoef[:, c], m.texEvec[np.newaxis, c, mask, :] * B[:, mask, np.newaxis], axes = 1)
+                J_lightCoef[c*9: (c+1)*9, :] = B[:, mask] * texture[c, :]
+                I[c, :] = np.dot(lightCoef[:, c], J_lightCoef[c*9: (c+1)*9, :])
+            
+            r = (I - x.T)
+            
+            if option is 'tl':
+#                return 2 * w[0] * np.r_[r.flatten().dot(J_texCoef), J_lightCoef[:9, :].dot(r[0, :]), J_lightCoef[9: 18, :].dot(r[1, :]), J_lightCoef[18: 27, :].dot(r[2, :])] / mask.size + np.r_[2 * w[1] * texCoef / m.texEval, np.zeros(27)]
+                return 2 * w[0] * np.r_[r.flatten().dot(J_texCoef), J_lightCoef[:9, :].dot(r[0, :]), J_lightCoef[9: 18, :].dot(r[1, :]), J_lightCoef[18: 27, :].dot(r[2, :])] + np.r_[2 * w[1] * texCoef / m.texEval, np.zeros(27)]
+        
+            # Texture only
+            elif option is 't':
+#                return 2 * (w[0] * r.flatten().dot(J_texCoef) / mask.size + w[1] * texCoef / m.texEval)
+                return 2 * (w[0] * r.flatten().dot(J_texCoef) + w[1] * texCoef / m.texEval)
+            
+            # Light only
+            elif option is 'l':
+#                return 2 * w[0] * np.r_[J_lightCoef[:9, :].dot(r[0, :]), J_lightCoef[9: 18, :].dot(r[1, :]), J_lightCoef[18: 27, :].dot(r[2, :])] / mask.size
+                return 2 * w[0] * np.r_[J_lightCoef[:9, :].dot(r[0, :]), J_lightCoef[9: 18, :].dot(r[1, :]), J_lightCoef[18: 27, :].dot(r[2, :])]
+        
+        check_grad(textureLightingCost, textureLightingGrad, np.r_[texCoef, l.flatten()], imgMasked, zBuffer, B, m)
+        check_grad(textureLightingCost, textureLightingGrad, texCoef, imgMasked, zBuffer, B, m, (1, 1), 't', l.flatten())
+        check_grad(textureLightingCost, textureLightingGrad, l.flatten(), imgMasked, zBuffer, B, m, (1, 1), 'l', texCoef)
+        
+        initTexLight = minimize(textureLightingCost, np.r_[texCoef, l.flatten()], args = (imgMasked, zBuffer, B, m), jac = textureLightingGrad)
+        
+        texParam = initTexLight['x']
+        texCoef = texParam[:m.texEval.size]
+        lightCoef = texParam[m.texEval.size:].reshape(9, 3)
+        
+        texture = genTexture(fitting, texParam, m)
         break
+        
         '''
         Optimization
         '''

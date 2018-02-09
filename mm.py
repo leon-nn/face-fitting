@@ -875,18 +875,38 @@ def generateFace(P, m, ind = None):
     # After rigid transformation and scaling
     return s*np.dot(R, model) + t[:, np.newaxis]
 
-def calcNormals(R, m, idCoef, expCoef):
+def calcNormals(X, m):
     """
     Calculate the per-vertex normal vectors for a model given shape coefficients
     """
-    X = m.idMean
-#    X = R.dot(m.idMean + np.tensordot(m.idEvec, idCoef, axes = 1) + np.tensordot(m.expEvec, expCoef, axes = 1)) + t[:, np.newaxis]
-    
     faceNorm = np.cross(X[:, m.face[:, 0]] - X[:, m.face[:, 1]], X[:, m.face[:, 0]] - X[:, m.face[:, 2]], axisa = 0, axisb = 0)
     
     vNorm = np.array([np.sum(faceNorm[faces, :], axis = 0) for faces in m.vertex2face])
     
     return normalize(vNorm)
+
+def sph2cart(el, az):
+    """
+    Unit sphere elevation and azumuth angles to Cartesian coordinates
+    """
+    return np.sin(el) * np.cos(az), np.sin(el) * np.sin(az), np.cos(el)
+
+def sh9(x, y, z):
+    """
+    First nine spherical harmonics as functions of Cartesian coordinates
+    """
+    h = np.empty((9, x.size))
+    h[0, :] = 1/np.sqrt(4*np.pi) * np.ones(x.size)
+    h[1, :] = np.sqrt(3/(4*np.pi)) * z
+    h[2, :] = np.sqrt(3/(4*np.pi)) * x
+    h[3, :] = np.sqrt(3/(4*np.pi)) * y
+    h[4, :] = 1/2*np.sqrt(5/(4*np.pi)) * (3*np.square(z) - 1)
+    h[5, :] = 3*np.sqrt(5/(12*np.pi)) * x * z
+    h[6 ,:] = 3*np.sqrt(5/(12*np.pi)) * y * z
+    h[7, :] = 3/2*np.sqrt(5/(12*np.pi)) * (np.square(x) - np.square(y))
+    h[8, :] = 3*np.sqrt(5/(12*np.pi)) * x * y
+    
+    return h
 
 def shBasis(alb, n):
     """
@@ -903,25 +923,6 @@ def shBasis(alb, n):
     
     For a sphere, the Lambertian kernel has most of its energy in the first three bands of the spherical harmonic basis functions (above). This implies that Lambertian reflectance functions can be well-approximated by these low-order SH bases.
     """
-    def sph2cart(el, az):
-        return np.sin(el) * np.cos(az), np.sin(el) * np.sin(az), np.cos(el)
-    
-    def sh9(x, y, z):
-        """
-        First nine spherical harmonics as functions of Cartesian coordinates
-        """
-        h = np.empty((9, x.size))
-        h[0, :] = 1/np.sqrt(4*np.pi) * np.ones(x.size)
-        h[1, :] = np.sqrt(3/(4*np.pi)) * z
-        h[2, :] = np.sqrt(3/(4*np.pi)) * x
-        h[3, :] = np.sqrt(3/(4*np.pi)) * y
-        h[4, :] = 1/2*np.sqrt(5/(4*np.pi)) * (3*np.square(z) - 1)
-        h[5, :] = 3*np.sqrt(5/(12*np.pi)) * x * z
-        h[6 ,:] = 3*np.sqrt(5/(12*np.pi)) * y * z
-        h[7, :] = 3/2*np.sqrt(5/(12*np.pi)) * (np.square(x) - np.square(y))
-        h[8, :] = 3*np.sqrt(5/(12*np.pi)) * x * y
-        
-        return h
     
     # Nine delta function locations (el, az) for point light sources to create positive lighting
     lsph = np.array([[0, 0], [68, -90], [74, 108], [80, 52], [85, -42], [85, -137], [85, 146], [85, -4], [51, 67]]) * np.pi / 180

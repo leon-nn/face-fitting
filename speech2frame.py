@@ -97,16 +97,16 @@ if __name__ == "__main__":
 
     os.chdir('/home/leon/f2f-fitting/obama/')
     numFramesSiro = 2882 #3744 #2260
-    numFramesKuro = 240 #2041
+    numFramesKuro = 2041 #2041
     
-    siroAudioVec, kuroAudioVec, t_video = speechProc('siro.wav', numFramesSiro, 24, 'kuro.wav', numFramesKuro)
+    siroAudioVec, kuroAudioVec, t_video = speechProc('siroNorm.wav', numFramesSiro, 24, 'kuroNorm.wav', numFramesKuro)
     
     # Find siro samples that are nearest to each kuro sample
     k = 20
     NN = NearestNeighbors(n_neighbors = k, metric = 'l2')
     
     NN.fit(siroAudioVec.T)
-    distance, ind = NN.kneighbors(siroAudioVec[:, :240].T)
+    distance, ind = NN.kneighbors(kuroAudioVec.T)
     
     # Calculate edge weights for candidate frames
     scaler = StandardScaler()
@@ -162,7 +162,7 @@ if __name__ == "__main__":
             
 #            np.exp(-np.fabs(t_video[ind[t, c1]] - t_video[ind[t+1, :]])**2)
             
-            weights[t, c1] = Dm[t, c1] + Dp[t, c1] + Dp[t+1, :]
+            weights[t, c1] = Dm[t, c1] + Dp[t, c1] + Dp[t+1, :] + distance[t, c1] + distance[t+1, :]
     
     # Create DAG and assign edge weights from distance matrix
     G = nx.DiGraph()
@@ -186,4 +186,4 @@ if __name__ == "__main__":
     
     mouthFace = importObj('mouth.obj', dataToImport = ['f'])[0]
     v = mouthVertices.reshape((numFramesSiro, 3, mouthIdx.size), order = 'F')
-    animate(v[optPath[:240]], mouthFace, 'graphSiro', m.texMean[:, mouthIdx])
+    animate(v[optPath], mouthFace, 'graphKuroD', m.texMean[:, mouthIdx])
