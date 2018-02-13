@@ -328,7 +328,8 @@ if __name__ == "__main__":
             
             I = np.empty((texture.shape[0], mask.size))
             for c in range(texture.shape[0]):
-                I[c, :] = np.dot(lightCoef[:, c], B[:, mask] * texture[c, :])
+#                I[c, :] = np.dot(lightCoef[:, c], B[:, mask] * texture[c, :])
+                I[c, :] = np.dot(lightCoef[:, c], B[:, mask]) * texture[c, :]
             
             r = (I.T - x).flatten()
             
@@ -364,9 +365,13 @@ if __name__ == "__main__":
             J_lightCoef = np.empty((27, mask.size))
             I = np.empty((3, mask.size))
             for c in range(3):
-                J_texCoef[c*mask.size: (c+1)*mask.size, :] = np.tensordot(lightCoef[:, c], m.texEvec[np.newaxis, c, mask, :] * B[:, mask, np.newaxis], axes = 1)
-                J_lightCoef[c*9: (c+1)*9, :] = B[:, mask] * texture[c, :]
-                I[c, :] = np.dot(lightCoef[:, c], J_lightCoef[c*9: (c+1)*9, :])
+#                J_texCoef[c*mask.size: (c+1)*mask.size, :] = np.tensordot(lightCoef[:, c], m.texEvec[np.newaxis, c, mask, :] * B[:, mask, np.newaxis], axes = 1)
+#                J_lightCoef[c*9: (c+1)*9, :] = B[:, mask] * texture[c, :]
+#                I[c, :] = np.dot(lightCoef[:, c], J_lightCoef[c*9: (c+1)*9, :])
+                
+                J_texCoef[c*mask.size: (c+1)*mask.size, :] = np.dot(lightCoef[:, c], B[:, mask])[:, np.newaxis] * m.texEvec[c, mask, :]
+                J_lightCoef[c*9: (c+1)*9, :] = texture[c, :] * B[:, mask]
+                I[c, :] = np.dot(lightCoef[:, c], B[:, mask]) * texture[c, :]
             
             r = (I - x.T)
             
@@ -382,7 +387,7 @@ if __name__ == "__main__":
             # Light only
             elif option is 'l':
 #                return 2 * w[0] * np.r_[J_lightCoef[:9, :].dot(r[0, :]), J_lightCoef[9: 18, :].dot(r[1, :]), J_lightCoef[18: 27, :].dot(r[2, :])] / mask.size
-                return 2 * w[0] * np.r_[J_lightCoef[:9, :].dot(r[0, :]), J_lightCoef[9: 18, :].dot(r[1, :]), J_lightCoef[18: 27, :].dot(r[2, :])]
+                return 2 * w[0] * np.r_[J_lightCoef[:9, :].dot(r[0, :]), J_lightCoef[9: 18, :].dot(r[1, :]), J_lightCoef[18:, :].dot(r[2, :])]
         
         check_grad(textureLightingCost, textureLightingGrad, np.r_[texCoef, l.flatten()], imgMasked, zBuffer, B, m)
         check_grad(textureLightingCost, textureLightingGrad, texCoef, imgMasked, zBuffer, B, m, (1, 1), 't', l.flatten())

@@ -9,6 +9,7 @@ from PIL import Image
 shaderProgram = None
 vertexBufferObject = None
 indexBufferObject = None
+faceIDBufferObject = None
 framebufferObject = None
 vertexArrayObject = None
 
@@ -18,8 +19,12 @@ vertexShaderString = """
 
 layout(location = 0) in vec3 windowCoordinates;
 layout(location = 1) in vec3 vertexColor;
+layout(location = 2) in vec3 barycentricCoordinates;
+layout(location = 3) in uint triangleID;
 
 smooth out vec3 fragmentColor;
+smooth out vec3 fragmentBarycentricCoordinates;
+flat out uint fragmentFaceID;
 
 uniform mat4 windowToClipMat;
 
@@ -27,6 +32,8 @@ void main()
 {
     gl_Position = windowToClipMat * vec4(windowCoordinates, 1.0f);
     fragmentColor = vertexColor;
+    fragmentBarycentricCoordinates = barycentricCoordinates;
+    fragmentFaceID = triangleID;
 }
 """
 
@@ -34,12 +41,19 @@ fragmentShaderString = """
 #version 330
 
 smooth in vec3 fragmentColor;
+smooth in vec3 fragmentBarycentricCoordinates;
+flat in uint fragmentFaceID;
+in uint gl_PrimitiveID;
 
-out vec4 pixelColor;
+layout(location = 0) out vec4 pixelColor;
+layout(location = 1) out vec3 pixelBarycentricCoordinates;
+layout(location = 2) out uvec4 pixelFaceID;
 
 void main()
 {
     pixelColor = vec4(fragmentColor, 1.);
+    pixelBarycentricCoordinates = fragmentBarycentricCoordinates;
+    pixelFaceID = uvec4(gl_PrimitiveID, 0, 0, 1);
 }
 """
 
@@ -111,7 +125,7 @@ def configureShaders(var):
     # We're finished modifying our shader, so we set the program to be used as null to be proper
     glUseProgram(0)
 
-def initializeVertexBuffer(meshData, indexData):
+def initializeVertexBuffer(meshData, indexData = None, faceID = None):
     """
     Assign the triangular mesh data and the triplets of vertex indices that form the triangles (index data) to VBOs
     """
@@ -128,12 +142,20 @@ def initializeVertexBuffer(meshData, indexData):
     # Unbind the VBO from the target to be proper
     glBindBuffer(GL_ARRAY_BUFFER, 0)
     
-    # Similar to the above, but for the index data
-    global indexBufferObject
-    indexBufferObject = glGenBuffers(1)
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, indexBufferObject)
-    glBufferData(GL_ELEMENT_ARRAY_BUFFER, indexData, GL_STATIC_DRAW)
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0)
+    if indexData is not None:
+        # Similar to the above, but for the vertex index data
+        global indexBufferObject
+        indexBufferObject = glGenBuffers(1)
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, indexBufferObject)
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER, indexData, GL_STATIC_DRAW)
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0)
+    else:
+        # Similar to the above, but for the face index data
+        global faceIDBufferObject
+        faceIDBufferObject = glGenBuffers(1)
+        glBindBuffer(GL_ARRAY_BUFFER, faceIDBufferObject)
+        glBufferData(GL_ARRAY_BUFFER, faceID, GL_STATIC_DRAW)
+        glBindBuffer(GL_ARRAY_BUFFER, 0)
 
 def updateVertexBuffer(meshData):
     # Set the VAO as the currently used object in the OpenGL context
@@ -171,6 +193,22 @@ def initializeFramebufferObject(width, height, img = None):
     # Unbind the texture buffer from the GL_TEXTURE_2D target in the OpenGL context
     glBindTexture(GL_TEXTURE_2D, 0)
     
+    # Make a similar texture for the barycentric coordinates of each pixel
+    barycentricTexture = glGenTextures(1)
+    glBindTexture(GL_TEXTURE_2D, barycentricTexture)
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_RGB, GL_FLOAT, None)
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST)
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST)
+    glBindTexture(GL_TEXTURE_2D, 0)
+    
+    # Make a similar texture for the triangle face ID of each pixel
+    faceIDTexture = glGenTextures(1)
+    glBindTexture(GL_TEXTURE_2D, faceIDTexture)
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_R32UI, width, height, 0, GL_RED_INTEGER, GL_UNSIGNED_INT, None)
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST)
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST)
+    glBindTexture(GL_TEXTURE_2D, 0)
+    
     # Create a handle and assign a renderbuffer to it
     depthRenderbuffer = glGenRenderbuffers(1)
     
@@ -193,8 +231,17 @@ def initializeFramebufferObject(width, height, img = None):
     # Attaches the texture buffer created above to the GL_COLOR_ATTACHMENT0 attachment point of the FBO
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, renderedTexture, 0)
     
+    # Attaches the barycentric buffer created above to the GL_COLOR_ATTACHMENT1 attachment point of the FBO
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D, barycentricTexture, 0)
+    
+    # Attaches the faceID buffer created above to the GL_COLOR_ATTACHMENT2 attachment point of the FBO
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT2, GL_TEXTURE_2D, faceIDTexture, 0)
+    
     # Attaches the renderbuffer created above to the GL_DEPTH_ATTACHMENT attachment point of the FBO
     glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, depthRenderbuffer)
+    
+    # Defines which buffers the fragment shader will draw to
+    glDrawBuffers(3, [GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1, GL_COLOR_ATTACHMENT2])
     
     # Sees if your GPU can handle the FBO configuration defined above
     if glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE:
@@ -215,7 +262,7 @@ def resetFramebufferObject():
     # Unbind the FBO, relinquishing the GL_FRAMEBUFFER back to the window manager (i.e. GLUT)
     glBindFramebuffer(GL_FRAMEBUFFER, 0)
 
-def initializeVertexArray(vertexDim = 3, numVertices = 28588):
+def initializeVertexArray(vertexDim = 3, numVertices = 28588, indexData = None):
     """
     Creates the VAO to store the VBOs for the mesh data and the index data, 
     """
@@ -242,13 +289,25 @@ def initializeVertexArray(vertexDim = 3, numVertices = 28588):
     # Assign the second type of input, beginning at the offset calculated above, to the shaders
     glVertexAttribPointer(1, vertexDim, GL_FLOAT, GL_FALSE, 0, colorOffset)
     
-    # Bind the VBO for the index data to the GL_ELEMENT_ARRAY_BUFFER target in the OpenGL context
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, indexBufferObject)
-    
+    if indexData is not None:
+        # Bind the VBO for the index data to the GL_ELEMENT_ARRAY_BUFFER target in the OpenGL context
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, indexBufferObject)
+    else:
+        # Assign the barycentric coordinates for each mesh triangle vertex as the third input to the shaders
+        glEnableVertexAttribArray(2)
+        indexOffset = c_void_p(vertexDim * numVertices * 4 * 2)
+        glVertexAttribPointer(2, vertexDim, GL_FLOAT, GL_FALSE, 0, indexOffset)
+        
+        # Assign the face indices for each mesh triangle vertex as the fourth input to the shaders
+        glBindBuffer(GL_ARRAY_BUFFER, faceIDBufferObject)
+        glEnableVertexAttribArray(3)
+        faceIDOffset = c_void_p(vertexDim * numVertices * 4 * 3)
+        glVertexAttribPointer(3, 1, GL_UNSIGNED_INT, GL_FALSE, 0, faceIDOffset)
+        
     # Unset the VAO as the current object in the OpenGL context
     glBindVertexArray(0)
-
-def initializeContext(width, height, meshData, indexData, img = None):
+    
+def initializeContext(width, height, meshData, faceIndices = None, indexData = None, img = None):
     # You can use any means to initialize an OpenGL context (e.g. GLUT), but since we're rendering offscreen to an FBO, we don't need to bother to display, which is why we hide the GLUT window.
     glutInit()
     window = glutCreateWindow('Merely creating an OpenGL context...')
@@ -278,11 +337,16 @@ def initializeContext(width, height, meshData, indexData, img = None):
     glDepthRange(0.0, 1.0)
     
     # Initialize OpenGL objects
-    initializeVertexBuffer(meshData, indexData)
+    if indexData is not None:
+        numVertices = meshData.shape[0] // 2
+    else:
+        numVertices = meshData.shape[0] // 3
+        
+    faceIndices = initializeVertexBuffer(meshData, indexData, faceIndices)
     initializeFramebufferObject(width, height, img)
-    initializeVertexArray()
+    initializeVertexArray(meshData.shape[1], numVertices, indexData)
 
-def render(indexData):
+def render(indexData, vertexDim = 3, numVertices = 56572):
     # Defines what shaders to use
     glUseProgram(shaderProgram)
     
@@ -292,15 +356,18 @@ def render(indexData):
     # Set our initialized VAO as the currently used object in the OpenGL context
     glBindVertexArray(vertexArrayObject)
     
-    # Draws the mesh triangles defined in the VBO of the VAO above according to the vertices defining the triangles in indexData, which is of unsigned shorts
-    glDrawElements(GL_TRIANGLES, indexData.size, GL_UNSIGNED_SHORT, None)
+    if indexData is not None:
+        # Draws the mesh triangles defined in the VBO of the VAO above according to the vertices defining the triangles in indexData, which is of unsigned shorts
+        glDrawElements(GL_TRIANGLES, indexData.size, GL_UNSIGNED_SHORT, None)
+    else:
+        glDrawArrays(GL_TRIANGLES, 0, vertexDim * numVertices)
     
     # Being proper
     glBindVertexArray(0)
     glUseProgram(0)
     glBindFramebuffer(GL_FRAMEBUFFER, 0)
 
-def grabRendering(width, height):
+def grabRendering(width, height, barycentric = True):
     # Use our initialized FBO instead of the default GLUT framebuffer
     glBindFramebuffer(GL_FRAMEBUFFER, framebufferObject)
     
@@ -311,11 +378,23 @@ def grabRendering(width, height):
     glReadBuffer(GL_COLOR_ATTACHMENT0)
     
     # Now we do the actual reading, noting that we read the pixels in the buffer as unsigned bytes to be consistent will how they are stored
-    data = glReadPixels(0, 0, width, height, GL_RGB, GL_FLOAT)
-    glBindFramebuffer(GL_FRAMEBUFFER, 0)
+    rendering = glReadPixels(0, 0, width, height, GL_RGB, GL_FLOAT)
+    rendering = np.frombuffer(rendering, dtype = np.float32).reshape(height, width, 3)
     
-    # Convert the unsigned bytes to a NumPy array for whatever needs you may have
-    return np.frombuffer(data, dtype = np.float32).reshape(height, width, 3)
+    if barycentric:
+        glReadBuffer(GL_COLOR_ATTACHMENT1)
+        barycentricCoords = glReadPixels(0, 0, width, height, GL_RGB, GL_FLOAT)
+        barycentricCoords = np.frombuffer(barycentricCoords, dtype = np.float32).reshape(height, width, 3)
+        
+        glReadBuffer(GL_COLOR_ATTACHMENT2)
+        faceID = glReadPixels(0, 0, width, height, GL_RED_INTEGER, GL_UNSIGNED_INT)
+        faceID = np.frombuffer(faceID, dtype = np.uint32).reshape(height, width)
+        
+        glBindFramebuffer(GL_FRAMEBUFFER, 0)
+        return rendering, barycentricCoords, faceID
+    else:
+        glBindFramebuffer(GL_FRAMEBUFFER, 0)
+        return rendering
 
 if __name__ == '__main__':
     
@@ -343,18 +422,22 @@ if __name__ == '__main__':
     vertexColors = m.texMean.T
     
     numVertices = vertexCoords.shape[0]
+    vertexDim = vertexCoords.shape[1]
     meshData = np.r_[vertexCoords, vertexColors].astype(np.float32)
+    barycentricCoord = np.tile(np.eye(3, dtype = np.float32), (indexData.shape[0], 1))
+    faceID = np.repeat(np.arange(indexData.shape[0], dtype = np.uint32), 3)
+    faceID = np.ones(faceID.shape, dtype = np.uint32)
+    meshDataExpanded = np.r_[vertexCoords[indexData.flat], vertexColors[indexData.flat], barycentricCoord].astype(np.float32)
     indexData = indexData.astype(np.uint16)
     
-    vertexDim = 3
-    numVertices = vertexCoords.shape[0]
-    
-    initializeContext(width, height, meshData, indexData, img.tobytes())
+#    initializeContext(width, height, meshData, indexData, img.tobytes())
+    initializeContext(width, height, meshDataExpanded, faceID)
     
     # Then we render offscreen to the FBO
 #    render(indexData)
+    render(None)
     
-    rendering = grabRendering(width, height)
+    rendering, pixelBarycentricCoords, pixelFaceID = grabRendering(width, height, True)
     plt.figure()
     plt.imshow(rendering)
     
