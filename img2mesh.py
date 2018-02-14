@@ -195,13 +195,24 @@ if __name__ == "__main__":
         meshData = np.r_[fitting.T, texture.T].astype(np.float32)
         indexData = m.face.astype(np.uint16)
         openglRender.initializeContext(img.shape[1], img.shape[0], meshData, indexData)
-        openglRender.render(indexData)
-        rendering = openglRender.grabRendering(img.shape[1], img.shape[0])
+        openglRender.render()
+        rendering, pixelCoord, pixelFaces, pixelBarycentricCoords = openglRender.grabRendering(img.shape[1], img.shape[0], return_info = True)
         
         plt.figure()
         plt.imshow(rendering)
         
-        zBuffer, pixelCoord = calcZBuffer(fitting)
+        pixelVertices = indexData[pixelFaces, :]
+        colorMat = texture[:, pixelVertices.flat].reshape((3, 3, pixelFaces.size), order = 'F')
+        reconstructedColor = np.einsum('ijk,lki->il', pixelBarycentricCoords[:, np.newaxis, :], colorMat)
+        reconstruction = np.zeros(rendering.shape)
+        reconstruction[pixelCoord[:, 0], pixelCoord[:, 1], :] = reconstructedColor
+        
+#        plt.figure()
+#        plt.imshow(np.fabs(reconstruction - rendering))
+        
+        break
+        
+#        zBuffer, pixelCoord = calcZBuffer(fitting)
         
 #        mask = np.zeros(img.shape[:2], dtype = bool)
 #        mask[pixelCoord[:, 1], pixelCoord[:, 0]] = True
@@ -210,38 +221,64 @@ if __name__ == "__main__":
         
         """
         """
-        def initialTextureCost(texCoef, img, vertexCoord, m):
+        def initialTextureCost(texCoef, img, vertexCoord, m, w = (wCol, wReg)):
             vertexColor = m.texMean + np.tensordot(m.texEvec, texCoef, axes = 1)
             
-            openglRender.updateVertexBuffer(np.r_[vertexCoord.T, vertexColor.T].astype(np.float32))
+            openglRender.updateVertexBuffer(np.r_[vertexCoord.T, vertexColor.T].astype(np.float32), indexData)
             openglRender.resetFramebufferObject()
-            openglRender.render(m.face.astype(np.uint16))
-            rendering = openglRender.grabRendering(img.shape[1], img.shape[0])
+            openglRender.render()
+            rendering, pixelCoord = openglRender.grabRendering(img.shape[1], img.shape[0], return_info = True)[:2]
             
-            mask = rendering.any(axis = -1)
+            rendering = rendering[pixelCoord[:, 0], pixelCoord[:, 1]]
+            img = img[pixelCoord[:, 0], pixelCoord[:, 1]]
             
-            #
-            Ecol = np.linalg.norm((rendering[mask] - img[mask]), axis = 1).sum() / mask.sum()
-            r = (rendering[mask] - img[mask]).flatten()
-            Ecol = np.dot(r, r) / mask.sum()
+            # Color matching cost
+#            Ecol = np.linalg.norm((rendering - img), axis = 1).sum() / mask.sum()
+            r = (rendering - img).flatten()
+            Ecol = np.dot(r, r) / pixelCoord.shape[0]
             
             # Statistical regularization
             Ereg = np.sum(texCoef ** 2 / m.texEval)
             
-            return 100 * Ecol + Ereg
+            return w[0] * Ecol + w[1] * Ereg
         
-#        initTex = minimize(initialTextureCost, texCoef, args = (img, fitting, m), method = 'powell')
-#        texCoef = initTex['x']
-#        texture = m.texMean + np.tensordot(m.texEvec, texCoef, axes = 1)
-#        
-#        openglRender.updateVertexBuffer(np.r_[fitting.T, texture.T].astype(np.float32))
-#        openglRender.resetFramebufferObject()
-#        openglRender.render(m.face.astype(np.uint16))
-#        rendering2 = openglRender.grabRendering(img.shape[1], img.shape[0])
-#        
-#        plt.figure()
-#        plt.imshow(rendering2)
-#        break
+        def initialTextureGrad(texCoef, img, vertexCoord, m, w = (wCol, wReg)):
+            vertexColor = m.texMean + np.tensordot(m.texEvec, texCoef, axes = 1)
+            
+            openglRender.updateVertexBuffer(np.r_[vertexCoord.T, vertexColor.T].astype(np.float32), indexData)
+            openglRender.resetFramebufferObject()
+            openglRender.render()
+            rendering, pixelCoord, pixelFaces, pixelBarycentricCoords = openglRender.grabRendering(img.shape[1], img.shape[0], return_info = True)
+            numPixels = pixelFaces.size
+            
+            rendering = rendering[pixelCoord[:, 0], pixelCoord[:, 1]]
+            img = img[pixelCoord[:, 0], pixelCoord[:, 1]]
+            
+            pixelVertices = indexData[pixelFaces, :]
+            
+            r = (rendering - img).flatten('F')
+            
+            J_texCoef = np.empty((pixelVertices.size, texCoef.size))
+            for c in range(3):
+                pixelTexEvec = m.texEvec[c, pixelVertices.flat, :].reshape((numPixels, 3, texCoef.size))
+                J_texCoef[c*numPixels: (c+1)*numPixels, :] = np.einsum('ijk,ikl->il', pixelBarycentricCoords[:, np.newaxis, :], pixelTexEvec)
+            
+            return 2 * (w[0] * r.dot(J_texCoef) / numPixels + w[1] * texCoef / m.texEval)
+        
+        check_grad(initialTextureCost, initialTextureGrad, texCoef, img, fitting, m)
+        
+        initTex = minimize(initialTextureCost, texCoef, args = (img, fitting, m), jac = initialTextureGrad)
+        texCoef = initTex['x']
+        texture = m.texMean + np.tensordot(m.texEvec, texCoef, axes = 1)
+        
+        openglRender.updateVertexBuffer(np.r_[fitting.T, texture.T].astype(np.float32), indexData)
+        openglRender.resetFramebufferObject()
+        openglRender.render()
+        rendering2 = openglRender.grabRendering(img.shape[1], img.shape[0])
+        
+        plt.figure()
+        plt.imshow(rendering2)
+        break
         
         imgMasked = img[pixelCoord[:, 1], pixelCoord[:, 0]]
         initTex = minimize(textureCost, texCoef, args = (imgMasked, zBuffer, m, (wCol, wReg)), jac = textureGrad)
@@ -254,8 +291,7 @@ if __name__ == "__main__":
         #exportObj(shape.T, c = texture.T, f = m.face, fNameOut = 'texTest')
         
         meshData = np.r_[fitting.T, texture.T].astype(np.float32)
-        indexData = m.face.astype(np.uint16)
-        openglRender.initializeContext(img.shape[1], img.shape[0], meshData, indexData)
+        openglRender.updateVertexBuffer(meshData)
         openglRender.render(indexData)
         rendering = openglRender.grabRendering(img.shape[1], img.shape[0])
         
@@ -302,7 +338,7 @@ if __name__ == "__main__":
         
         meshData = np.r_[fitting.T, textureWithLighting.T].astype(np.float32)
         indexData = m.face.astype(np.uint16)
-        openglRender.initializeContext(img.shape[1], img.shape[0], meshData, indexData)
+        openglRender.initializeContext(img.shape[1], img.shape[0], meshData, indexData = indexData)
         openglRender.render(indexData)
         rendering = openglRender.grabRendering(img.shape[1], img.shape[0])
         
@@ -328,7 +364,6 @@ if __name__ == "__main__":
             
             I = np.empty((texture.shape[0], mask.size))
             for c in range(texture.shape[0]):
-#                I[c, :] = np.dot(lightCoef[:, c], B[:, mask] * texture[c, :])
                 I[c, :] = np.dot(lightCoef[:, c], B[:, mask]) * texture[c, :]
             
             r = (I.T - x).flatten()
@@ -365,10 +400,6 @@ if __name__ == "__main__":
             J_lightCoef = np.empty((27, mask.size))
             I = np.empty((3, mask.size))
             for c in range(3):
-#                J_texCoef[c*mask.size: (c+1)*mask.size, :] = np.tensordot(lightCoef[:, c], m.texEvec[np.newaxis, c, mask, :] * B[:, mask, np.newaxis], axes = 1)
-#                J_lightCoef[c*9: (c+1)*9, :] = B[:, mask] * texture[c, :]
-#                I[c, :] = np.dot(lightCoef[:, c], J_lightCoef[c*9: (c+1)*9, :])
-                
                 J_texCoef[c*mask.size: (c+1)*mask.size, :] = np.dot(lightCoef[:, c], B[:, mask])[:, np.newaxis] * m.texEvec[c, mask, :]
                 J_lightCoef[c*9: (c+1)*9, :] = texture[c, :] * B[:, mask]
                 I[c, :] = np.dot(lightCoef[:, c], B[:, mask]) * texture[c, :]

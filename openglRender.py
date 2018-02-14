@@ -43,17 +43,16 @@ fragmentShaderString = """
 smooth in vec3 fragmentColor;
 smooth in vec3 fragmentBarycentricCoordinates;
 flat in uint fragmentFaceID;
-in uint gl_PrimitiveID;
 
 layout(location = 0) out vec4 pixelColor;
 layout(location = 1) out vec3 pixelBarycentricCoordinates;
-layout(location = 2) out uvec4 pixelFaceID;
+layout(location = 2) out uvec3 pixelFaceID;
 
 void main()
 {
     pixelColor = vec4(fragmentColor, 1.);
     pixelBarycentricCoordinates = fragmentBarycentricCoordinates;
-    pixelFaceID = uvec4(gl_PrimitiveID, 0, 0, 1);
+    pixelFaceID = uvec3(fragmentFaceID, 0, 0);
 }
 """
 
@@ -125,7 +124,7 @@ def configureShaders(var):
     # We're finished modifying our shader, so we set the program to be used as null to be proper
     glUseProgram(0)
 
-def initializeVertexBuffer(meshData, indexData = None, faceID = None):
+def initializeVertexBuffer(meshData, indexData, faceID = None):
     """
     Assign the triangular mesh data and the triplets of vertex indices that form the triangles (index data) to VBOs
     """
@@ -142,14 +141,14 @@ def initializeVertexBuffer(meshData, indexData = None, faceID = None):
     # Unbind the VBO from the target to be proper
     glBindBuffer(GL_ARRAY_BUFFER, 0)
     
-    if indexData is not None:
-        # Similar to the above, but for the vertex index data
-        global indexBufferObject
-        indexBufferObject = glGenBuffers(1)
-        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, indexBufferObject)
-        glBufferData(GL_ELEMENT_ARRAY_BUFFER, indexData, GL_STATIC_DRAW)
-        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0)
-    else:
+    # Similar to the above, but for the vertex index data
+    global indexBufferObject
+    indexBufferObject = glGenBuffers(1)
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, indexBufferObject)
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, indexData, GL_STATIC_DRAW)
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0)
+    
+    if faceID is not None:
         # Similar to the above, but for the face index data
         global faceIDBufferObject
         faceIDBufferObject = glGenBuffers(1)
@@ -157,15 +156,19 @@ def initializeVertexBuffer(meshData, indexData = None, faceID = None):
         glBufferData(GL_ARRAY_BUFFER, faceID, GL_STATIC_DRAW)
         glBindBuffer(GL_ARRAY_BUFFER, 0)
 
-def updateVertexBuffer(meshData):
+def updateVertexBuffer(meshData, indexData, indexed = False):
     # Set the VAO as the currently used object in the OpenGL context
     glBindVertexArray(vertexArrayObject)
     
     # Bind the VBO to the GL_ARRAY_BUFFER target in the OpenGL context
     glBindBuffer(GL_ARRAY_BUFFER, vertexBufferObject)
     
-    # Allocate enough memory for this VBO to contain the mesh data
-    glBufferData(GL_ARRAY_BUFFER, meshData, GL_STATIC_DRAW)
+    # Replace the mesh data (vertex coordinates and colors) in the VBO
+    if indexed:
+        glBufferSubData(GL_ARRAY_BUFFER, 0, meshData.nbytes, meshData)
+    else:
+        meshDataExpanded = np.r_[meshData[:meshData.shape[0]//2, :][indexData.flat], meshData[meshData.shape[0]//2:, :][indexData.flat]].astype(np.float32)
+        glBufferSubData(GL_ARRAY_BUFFER, 0, meshDataExpanded.nbytes, meshDataExpanded)
     
     # Unbind the VBO from the target to be proper
     glBindBuffer(GL_ARRAY_BUFFER, 0)
@@ -204,7 +207,7 @@ def initializeFramebufferObject(width, height, img = None):
     # Make a similar texture for the triangle face ID of each pixel
     faceIDTexture = glGenTextures(1)
     glBindTexture(GL_TEXTURE_2D, faceIDTexture)
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_R32UI, width, height, 0, GL_RED_INTEGER, GL_UNSIGNED_INT, None)
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_R16UI, width, height, 0, GL_RED_INTEGER, GL_UNSIGNED_SHORT, None)
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST)
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST)
     glBindTexture(GL_TEXTURE_2D, 0)
@@ -262,7 +265,7 @@ def resetFramebufferObject():
     # Unbind the FBO, relinquishing the GL_FRAMEBUFFER back to the window manager (i.e. GLUT)
     glBindFramebuffer(GL_FRAMEBUFFER, 0)
 
-def initializeVertexArray(vertexDim = 3, numVertices = 28588, indexData = None):
+def initializeVertexArray(indexed, numVertices = 28588, vertexDim = 3):
     """
     Creates the VAO to store the VBOs for the mesh data and the index data, 
     """
@@ -289,7 +292,7 @@ def initializeVertexArray(vertexDim = 3, numVertices = 28588, indexData = None):
     # Assign the second type of input, beginning at the offset calculated above, to the shaders
     glVertexAttribPointer(1, vertexDim, GL_FLOAT, GL_FALSE, 0, colorOffset)
     
-    if indexData is not None:
+    if indexed:
         # Bind the VBO for the index data to the GL_ELEMENT_ARRAY_BUFFER target in the OpenGL context
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, indexBufferObject)
     else:
@@ -301,13 +304,12 @@ def initializeVertexArray(vertexDim = 3, numVertices = 28588, indexData = None):
         # Assign the face indices for each mesh triangle vertex as the fourth input to the shaders
         glBindBuffer(GL_ARRAY_BUFFER, faceIDBufferObject)
         glEnableVertexAttribArray(3)
-        faceIDOffset = c_void_p(vertexDim * numVertices * 4 * 3)
-        glVertexAttribPointer(3, 1, GL_UNSIGNED_INT, GL_FALSE, 0, faceIDOffset)
-        
+        glVertexAttribIPointer(3, 1, GL_UNSIGNED_SHORT, 0, None)
+    
     # Unset the VAO as the current object in the OpenGL context
     glBindVertexArray(0)
     
-def initializeContext(width, height, meshData, faceIndices = None, indexData = None, img = None):
+def initializeContext(width, height, meshData, indexData, indexed = False, img = None):
     # You can use any means to initialize an OpenGL context (e.g. GLUT), but since we're rendering offscreen to an FBO, we don't need to bother to display, which is why we hide the GLUT window.
     glutInit()
     window = glutCreateWindow('Merely creating an OpenGL context...')
@@ -337,16 +339,20 @@ def initializeContext(width, height, meshData, faceIndices = None, indexData = N
     glDepthRange(0.0, 1.0)
     
     # Initialize OpenGL objects
-    if indexData is not None:
-        numVertices = meshData.shape[0] // 2
+    if indexed:
+        initializeVertexBuffer(meshData, indexData)
+        initializeVertexArray(indexed, numVertices = meshData.shape[0]//2)
     else:
-        numVertices = meshData.shape[0] // 3
+        barycentricCoord = np.tile(np.eye(3, dtype = np.float32), (indexData.shape[0], 1))
+        meshDataExpanded = np.r_[meshData[:meshData.shape[0]//2, :][indexData.flat], meshData[meshData.shape[0]//2:, :][indexData.flat], barycentricCoord].astype(np.float32)
+        faceID = np.repeat(np.arange(indexData.shape[0], dtype = np.uint16), 3) + 1
         
-    faceIndices = initializeVertexBuffer(meshData, indexData, faceIndices)
+        initializeVertexBuffer(meshDataExpanded, indexData, faceID)
+        initializeVertexArray(indexed, numVertices = faceID.size)
+    
     initializeFramebufferObject(width, height, img)
-    initializeVertexArray(meshData.shape[1], numVertices, indexData)
 
-def render(indexData, vertexDim = 3, numVertices = 56572):
+def render(indexed = False, vertexDim = 3, numFaces = 56572):
     # Defines what shaders to use
     glUseProgram(shaderProgram)
     
@@ -356,18 +362,18 @@ def render(indexData, vertexDim = 3, numVertices = 56572):
     # Set our initialized VAO as the currently used object in the OpenGL context
     glBindVertexArray(vertexArrayObject)
     
-    if indexData is not None:
+    if indexed:
         # Draws the mesh triangles defined in the VBO of the VAO above according to the vertices defining the triangles in indexData, which is of unsigned shorts
-        glDrawElements(GL_TRIANGLES, indexData.size, GL_UNSIGNED_SHORT, None)
+        glDrawElements(GL_TRIANGLES, vertexDim * numFaces, GL_UNSIGNED_SHORT, None)
     else:
-        glDrawArrays(GL_TRIANGLES, 0, vertexDim * numVertices)
+        glDrawArrays(GL_TRIANGLES, 0, vertexDim * numFaces)
     
     # Being proper
     glBindVertexArray(0)
     glUseProgram(0)
     glBindFramebuffer(GL_FRAMEBUFFER, 0)
 
-def grabRendering(width, height, barycentric = True):
+def grabRendering(width, height, return_info = False):
     # Use our initialized FBO instead of the default GLUT framebuffer
     glBindFramebuffer(GL_FRAMEBUFFER, framebufferObject)
     
@@ -381,27 +387,32 @@ def grabRendering(width, height, barycentric = True):
     rendering = glReadPixels(0, 0, width, height, GL_RGB, GL_FLOAT)
     rendering = np.frombuffer(rendering, dtype = np.float32).reshape(height, width, 3)
     
-    if barycentric:
+    if not return_info:
+        glBindFramebuffer(GL_FRAMEBUFFER, 0)
+        return rendering
+    else:
         glReadBuffer(GL_COLOR_ATTACHMENT1)
         barycentricCoords = glReadPixels(0, 0, width, height, GL_RGB, GL_FLOAT)
         barycentricCoords = np.frombuffer(barycentricCoords, dtype = np.float32).reshape(height, width, 3)
         
         glReadBuffer(GL_COLOR_ATTACHMENT2)
-        faceID = glReadPixels(0, 0, width, height, GL_RED_INTEGER, GL_UNSIGNED_INT)
-        faceID = np.frombuffer(faceID, dtype = np.uint32).reshape(height, width)
+        faceID = glReadPixels(0, 0, width, height, GL_RED_INTEGER, GL_UNSIGNED_SHORT)
+        faceID = np.frombuffer(faceID, dtype = np.uint16).reshape(height, width)
         
         glBindFramebuffer(GL_FRAMEBUFFER, 0)
-        return rendering, barycentricCoords, faceID
-    else:
-        glBindFramebuffer(GL_FRAMEBUFFER, 0)
-        return rendering
+        
+        pixelCoord = np.transpose(np.nonzero(faceID))
+        pixelFaces = faceID[faceID != 0] - 1
+        pixelBarycentricCoords = barycentricCoords[faceID != 0]
+        
+        return rendering, pixelCoord, pixelFaces, pixelBarycentricCoords
 
 if __name__ == '__main__':
     
     frame = 0
     img = Image.open('obama/orig/%05d.png' % (frame + 1))
     width, height = img.size
-    img = np.array(img)
+    img = np.array(img).astype(np.float32) / 255
     
     vertexCoords, indexData = importObj('obama/shapes/%05d.obj' % (frame + 1), dataToImport = ['v', 'f'])
     indexData -= 1
@@ -424,20 +435,16 @@ if __name__ == '__main__':
     numVertices = vertexCoords.shape[0]
     vertexDim = vertexCoords.shape[1]
     meshData = np.r_[vertexCoords, vertexColors].astype(np.float32)
-    barycentricCoord = np.tile(np.eye(3, dtype = np.float32), (indexData.shape[0], 1))
-    faceID = np.repeat(np.arange(indexData.shape[0], dtype = np.uint32), 3)
-    faceID = np.ones(faceID.shape, dtype = np.uint32)
-    meshDataExpanded = np.r_[vertexCoords[indexData.flat], vertexColors[indexData.flat], barycentricCoord].astype(np.float32)
     indexData = indexData.astype(np.uint16)
+    flag = True
     
-#    initializeContext(width, height, meshData, indexData, img.tobytes())
-    initializeContext(width, height, meshDataExpanded, faceID)
+    initializeContext(width, height, meshData, indexData, indexed = flag, img = img.tobytes())
     
     # Then we render offscreen to the FBO
-#    render(indexData)
-    render(None)
+    render(indexed = flag)
     
-    rendering, pixelBarycentricCoords, pixelFaceID = grabRendering(width, height, True)
+    rendering = grabRendering(width, height)
+#    rendering, pixelCoord, pixelFaces, pixelBarycentricCoords = grabRendering(width, height, return_info = True)
     plt.figure()
     plt.imshow(rendering)
     
