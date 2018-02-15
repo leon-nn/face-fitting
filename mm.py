@@ -906,7 +906,7 @@ def sh9(x, y, z):
     h[7, :] = 3/2*np.sqrt(5/(12*np.pi)) * (np.square(x) - np.square(y))
     h[8, :] = 3*np.sqrt(5/(12*np.pi)) * x * y
     
-    return h
+    return h * np.r_[np.pi, np.repeat(2*np.pi/3, 3), np.repeat(np.pi/4, 5)][:, np.newaxis]
 
 def shBasis(alb, n):
     """
@@ -937,11 +937,9 @@ def shBasis(alb, n):
     # Evaluate spherical harmonics at face shape normals
     B = sh9(n[:, 0], n[:, 1], n[:, 2])
     
-    norm = np.r_[np.pi, np.repeat(2*np.pi/3, 3), np.repeat(np.pi/4, 5)]
-    
     I = np.empty((alb.shape[0], 9, alb.shape[1]))
     for c in range(alb.shape[0]):
-        I[c, :, :] = np.dot(H.T, norm[:, np.newaxis] * B * alb[c, :])
+        I[c, :, :] = np.dot(H.T, B * alb[c, :])
     
 #    b = np.empty((alb.shape[0], alb.shape[1], 9))
 #    b[:, :, 0] = np.pi * 1/np.sqrt(4*np.pi) * alb
