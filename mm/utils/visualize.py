@@ -6,21 +6,18 @@ Created on Fri Dec 22 18:43:01 2017
 @author: leon
 """
 
-
 import os
+os.environ["QT_API"] = "pyqt"
 import numpy as np
-import librosa
-import librosa.display
-from sklearn.neighbors import NearestNeighbors
-from sklearn.mixture import GaussianMixture
-from sklearn.cluster import KMeans
-from sklearn import metrics
+#from sklearn.neighbors import NearestNeighbors
+#from sklearn.mixture import GaussianMixture
+#from sklearn.cluster import KMeans
+#from sklearn import metrics
 from mayavi import mlab
-import matplotlib.pyplot as plt
-import matplotlib.image as mpimg
-import skimage.io
-from pylab import savefig
-from tvtk.api import tvtk
+#import matplotlib.pyplot as plt
+#import matplotlib.image as mpimg
+#import skimage.io
+#from pylab import savefig
 
 def onpick3(event):
     """
@@ -42,6 +39,8 @@ def mlab_imshowColor(im, alpha = 255, **kwargs):
     alpha is a single number or a ndarray with dim (n*m) and scale (0->255]
     **kwargs is passed onto mayavi.mlab.imshow(..., **kwargs)
     """
+    from tvtk.api import tvtk
+    
     # Homogenous coordinate conversion
     im = np.concatenate((im, alpha * np.ones((im.shape[0], im.shape[1], 1), dtype = np.uint8)), axis = -1)
     colors = tvtk.UnsignedCharArray()
@@ -71,7 +70,7 @@ def animate(v, f, saveDir, t = None, alpha = 1):
         if t.shape[1] is not 3:
             t = t.T
         tmesh.module_manager.scalar_lut_manager.lut.table = np.c_[(t * 255), alpha * 255 * np.ones(v.shape[2])].astype(np.uint8)
-#        tmesh.actor.pro2perty.lighting = False
+#        tmesh.actor.property.lighting = False
         
     # Change viewport to x-y plane and enforce orthographic projection
     mlab.view(0, 0, 'auto', 'auto')
@@ -85,6 +84,8 @@ def animate(v, f, saveDir, t = None, alpha = 1):
         fName = '{:0>5}'.format(i + 1)
         tms.set(x = v[i, 0, :], y = v[i, 1, :], z = v[i, 2, :])
         mlab.savefig(saveDir + fName + '.png', figure = mlab.gcf())
+    
+    mlab.close(all = True)
         
 if __name__ == "__main__":
     

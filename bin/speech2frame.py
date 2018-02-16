@@ -6,22 +6,29 @@ Created on Fri Jan 19 16:07:52 2018
 @author: leon
 """
 
-from mm import Bunch, generateFace, importObj, rotMat2angle
+from mm.utils.mesh import generateFace
+from mm.utils.transform import rotMat2angle
+from mm.utils.io import importObj, speechProc
+from mm.models import MeshModel
+from mm.utils.visualize import animate
+
 import glob, os, json
 import numpy as np
-import librosa
 from sklearn.neighbors import NearestNeighbors
-from mayavi import mlab
 from sklearn.preprocessing import StandardScaler
 import networkx as nx
-
+        
 if __name__ == "__main__":
-
-    os.chdir('/home/leon/f2f-fitting/obama/')
+    
+    # Change to relevant data directory
+    os.chdir('/home/leon/f2f-fitting/data/obama/')
+    
+    # Specify file name of shiro audio file, number of frames in shiro video, and shiro video FPS
     fNameSiro = 'siroNorm.wav'
     numFramesSiro = 2882 #3744 #2260
     fpsSiro = 24
     
+    # Process audio features for the source (shiro) audio file
     siroAudioVec, timeVecVideo = speechProc(fNameSiro, numFramesSiro, fpsSiro, return_time_vec = True)
     
     # Create a kNN fitter to find the k closest siro audio features
@@ -29,17 +36,15 @@ if __name__ == "__main__":
     NN = NearestNeighbors(n_neighbors = k, metric = 'l2')
     NN.fit(siroAudioVec.T)
     
-    # Initialize
+    """
+    Initialize 3DMM, relevant OpenPose landmark indices, etc.
+    """
     # Load 3DMM
-    m = Bunch(np.load('../models/bfm2017.npz'))
-    m.idEvec = m.idEvec[:, :, :80]
-    m.idEval = m.idEval[:80]
-    m.expEvec = m.expEvec[:, :, :76]
-    m.expEval = m.expEval[:76]
+    m = MeshModel('../../models/bfm2017.npz')
     
-    # Load 3DMM parameters for the siro video, scaling some for a distance measure
+    # Load 3DMM parameters for the shiro video, scaling some for a distance measure
     scaler = StandardScaler()
-    param = np.load('paramRTS2Orig.npy')
+    param = np.load('paramRTS2Orig.npy')    # Parameters to orthographically project 3DMM onto shiro frame images
     expCoef = scaler.fit_transform(param[:, m.idEval.size: m.idEval.size + m.expEval.size])
     angles = param[:, m.idEval.size + m.expEval.size: m.idEval.size + m.expEval.size + 3]
     trans = scaler.fit_transform(param[:, m.idEval.size + m.expEval.size + 3: m.idEval.size + m.expEval.size + 5])
@@ -48,23 +53,30 @@ if __name__ == "__main__":
         R[i, ...] = rotMat2angle(angles[i, :])
     
     # Load OpenPose 2D landmarks for the siro video
-    lmPairs = np.array([[42, 47], [43, 46], [44, 45], [30, 36], [42, 45], [44, 47], [25, 29], [26, 28], [19, 23], [20, 22]])
     lm = np.empty((numFramesSiro, 70, 2))
     for i in range(numFramesSiro):
         with open('landmark/' + '{:0>5}'.format(i+1) + '.json', 'r') as fd:
             lm[i, ...] = np.array([l[0] for l in json.load(fd)], dtype = int).squeeze()[:, :2]
+    
+    # These pairs of OpenPose landmark indices correspond to certain features that we want to measure, such as the distance between the lower and upper lips, eyelids, etc.
+    targetLMPairs = np.array([[42, 47], [43, 46], [44, 45], [30, 36], [42, 45], [44, 47], [25, 29], [26, 28], [19, 23], [20, 22]])
             
-    # Get corresponding landmark locations on 3DMM
-    sourceLandmarkInds = np.array([16203, 16235, 16260, 16290, 27061, 22481, 22451, 22426, 22394, 8134, 8143, 8151, 8156, 6986, 7695, 8167, 8639, 9346, 2345, 4146, 5180, 6214, 4932, 4158, 10009, 11032, 12061, 13872, 12073, 11299, 5264, 6280, 7472, 8180, 8888, 10075, 11115, 9260, 8553, 8199, 7845, 7136, 7600, 8190, 8780, 8545, 8191, 7837, 4538, 11679])
-    sourceLmPairs = sourceLandmarkInds[lmPairs]
-    uniqueSourceLm, uniqueInv = np.unique(sourceLmPairs, return_inverse = True)
+    # Get corresponding landmark pairs on the 3DMM
+    sourceLMPairs = m.sourceLMInd[targetLMPairs]
+    
+    # Get the unique landmarks in these landmark pairs
+    uniqueSourceLM, uniqueInv = np.unique(sourceLMPairs, return_inverse = True)
     
     # Load mouth region from 3DMM for animation
-    mouthIdx = np.load('../bfmMouthIdx.npy')
+    mouthIdx = np.load('../../models/bfmMouthIdx.npy')
     mouthVertices = np.load('mouthVertices.npy')
-    mouthFace = importObj('mouth.obj', dataToImport = ['f'])[0]
+    mouthFace = importObj('mouth.obj', dataToImport = ['f'])
     
-    # Loop through each siro target audio file
+    """
+    Loop through the kuro (target) audio files of interest and find the shortest path sequence of shiro video frames to reenact the target audio file
+    """
+    
+    # Loop through each target audio file
     for fNameKuro in glob.glob('condition_enhanced/cleaned/*.wav'):
         fNameKuro = 'condition_enhanced/cleaned/7_EJF101_ESPBOBAMA1_00101_V01_T01.wav'
         kuroAudioVec = speechProc(fNameKuro, numFramesSiro, fpsSiro, kuro = True)
@@ -79,9 +91,9 @@ if __name__ == "__main__":
             Dp[q, :] = np.linalg.norm(trans[q, :] - trans[c, :], axis = 1) + np.linalg.norm(R[q, ...] - R[c, ...], axis = (1, 2))
             
         # Transition between candidate frames should have similar 3DMM landmarks and expression parameters
-        mmLm = np.empty((numFramesSiro, 3, uniqueSourceLm.size))
+        mmLm = np.empty((numFramesSiro, 3, uniqueSourceLM.size))
         for t in range(numFramesSiro):
-            mmLm[t] = generateFace(param[t, :], m, ind = uniqueSourceLm)
+            mmLm[t] = generateFace(param[t, :], m, ind = uniqueSourceLM)
         mmLm = mmLm[..., uniqueInv[::2]] - mmLm[..., uniqueInv[1::2]]
         mmLmNorm = np.linalg.norm(mmLm, axis = 1)
         
@@ -115,18 +127,15 @@ if __name__ == "__main__":
         optPath = nx.astar_path(G, s, right[t])
         optPath = np.unravel_index(optPath, (numFramesKuro, k))
         optPath = ind[optPath[0], optPath[1]]
-        audioMinDistancePath = ind[:, 0]
-        break
-        if not os.path.exists('graphOptPath'):
-            os.makedirs('graphOptPath')
-        if not os.path.exists('minDistancePath'):
-            os.makedirs('minDistancePath')
-        np.save('graphOptPath/' + os.path.splitext(os.path.basename(fNameKuro))[0], optPath)
-        np.save('minDistancePath/' + os.path.splitext(os.path.basename(fNameKuro))[0], audioMinDistancePath)
         
-        # Animate
+        # Save the optimal path of shiro video frame indices as an .npy file
+#        if not os.path.exists('graphOptPath'):
+#            os.makedirs('graphOptPath')
+#        np.save('graphOptPath/' + os.path.splitext(os.path.basename(fNameKuro))[0], optPath)
+        
+        # Animate the reenactment and save
         v = mouthVertices.reshape((numFramesSiro, 3, mouthIdx.size), order = 'F')
-        animate(v[optPath], mouthFace, 'graphAnimate/' + os.path.splitext(os.path.basename(fNameKuro))[0], m.texMean[:, mouthIdx])
-        mlab.close(all = True)
-        animate(v[audioMinDistancePath], mouthFace, 'minDistanceAnimate/' + os.path.splitext(os.path.basename(fNameKuro))[0], m.texMean[:, mouthIdx])
-        mlab.close(all = True)
+        animate(v[optPath], mouthFace, 'temp/' + os.path.splitext(os.path.basename(fNameKuro))[0], m.texMean[:, mouthIdx])
+        
+        
+        break

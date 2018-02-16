@@ -1,19 +1,19 @@
 import numpy as np
+import os
 
 class MeshModel:
-    def __init__(self, model, numShapeEvecs = 80, numExpEvecs = 76, numTexEvecs = 80):
-        if model is 'BFM2017':
-            modelDict = np.load('models/bfm2017.npz')
-        elif model is 'FW':
-            modelDict = np.load('models/fw.npz')
-            
+    def __init__(self, modelFile, numShapeEvecs = 80, numExpEvecs = 76, numTexEvecs = 80):
+        
+        model = os.path.splitext(os.path.basename(modelFile))[0]
+        
+        modelDict = np.load(modelFile)
         self.__dict__.update(modelDict)
         self.idEvec = self.idEvec[:, :, :numShapeEvecs]
         self.idEval = self.idEval[:numShapeEvecs]
         self.expEvec = self.expEvec[:, :, :numExpEvecs]
         self.expEval = self.expEval[:numExpEvecs]
         
-        if model is 'BFM2017':
+        if model == 'bfm2017':
             self.texEvec = self.texEvec[:, :, :numTexEvecs]
             self.texEval = self.texEval[:numTexEvecs]
             

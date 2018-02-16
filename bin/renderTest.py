@@ -16,14 +16,14 @@ from PIL import Image
 if __name__ == '__main__':
     
     frame = 0
-    img = Image.open('data/obama/orig/%05d.png' % (frame + 1))
+    img = Image.open('../data/obama/orig/%05d.png' % (frame + 1))
     width, height = img.size
     img = np.array(img).astype(np.float32) / 255
     
-    vertexCoords, indexData = importObj('data/obama/shapes/%05d.obj' % (frame + 1), dataToImport = ['v', 'f'])
+    vertexCoords, indexData = importObj('../data/obama/shapes/%05d.obj' % (frame + 1), dataToImport = ['v', 'f'])
     indexData -= 1
     
-    RTS = np.load('data/obama/RTS.npy')
+    RTS = np.load('../data/obama/RTS.npy')
     # The Euler angles for the rotation matrix are the first 3 columns
     eulerAngles = RTS[frame, :3]
     # The translation vector is the next 3 columns
@@ -33,7 +33,7 @@ if __name__ == '__main__':
     
     vertexCoords = S * np.dot(vertexCoords, rotMat2angle(eulerAngles).T) + T
     
-    m = MeshModel('BFM2017')
+    m = MeshModel('../models/bfm2017.npz')
     vertexColors = m.texMean.T
     
     meshData = np.r_[vertexCoords, vertexColors]
@@ -47,10 +47,10 @@ if __name__ == '__main__':
     plt.imshow(rendering)
     
     for frame in range(1, 52, 10):
-        img = Image.open('data/obama/orig/%05d.png' % (frame + 1))
+        img = Image.open('../data/obama/orig/%05d.png' % (frame + 1))
         img = img.tobytes()
         
-        vertexCoords = importObj('data/obama/shapes/%05d.obj' % (frame + 1), dataToImport = ['v'])
+        vertexCoords = importObj('../data/obama/shapes/%05d.obj' % (frame + 1), dataToImport = ['v'])
         eulerAngles = RTS[frame, :3]
         T = RTS[frame, 3: 6]
         S = RTS[frame, 6]

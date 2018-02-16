@@ -6,30 +6,6 @@ Created on Thu Sep 28 11:43:00 2017
 @author: nguyen
 """
 
-
-
-
-# For plotting and importing PNG images
-import matplotlib.pyplot as plt
-import matplotlib.image as mpimg
-#from mpl_toolkits.mplot3d import Axes3D
-#import scipy.interpolate as intp
-
-os.environ["QT_API"] = "pyqt"
-
-
-#from scipy.stats import mode
-
-
-
-
-from scipy.optimize import minimize
-
-from scipy.io import loadmat
-
-import mayavi.mlab as mlab
-
-
 if __name__ == "__main__":
     #bfm2fw = np.array([0, 2, 3, 4, 5, 6, 7, 8, 13, 14, 16, 17, 18, 21, 22, 23, 24, 29, 30, 32, 33, 34, 37, 38, 39])
     #fw2bfm = np.array([7, 59, 55, 62, 49, 39, 65, 34, 33, 31, 32, 52, 50, 45, 41, 40, 30, 29, 27, 28, 46, 48, 44, 37, 38])
