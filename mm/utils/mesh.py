@@ -6,6 +6,10 @@ Created on Fri Feb 16 15:15:06 2018
 @author: leon
 """
 
+import numpy as np
+from .transform import rotMat2angle, sh9
+from sklearn.preprocessing import normalize
+
 def generateFace(P, m, ind = None):
     """
     Generate vertices based off of eigenmodel and vector of parameters
@@ -28,7 +32,7 @@ def generateFace(P, m, ind = None):
     # After rigid transformation and scaling
     return s*np.dot(R, model) + t[:, np.newaxis]
 
-def genTexture(vertexCoord, texParam, m):
+def generateTexture(vertexCoord, texParam, m):
             
     texCoef = texParam[:m.texEval.size]
     lightCoef = texParam[m.texEval.size:].reshape(9, 3)
@@ -193,6 +197,6 @@ def calcZBuffer(vertexCoord):
             candidateVertexInds = np.where((vertex2pixel[:, 0] == pixelCoord[i, 0]) & (vertex2pixel[:, 1] == pixelCoord[i, 1]))[0]
             
             # Of the vertices, see which one has the smallest z coordinate and assign that vertex to the pixel coordinate in the z-buffer
-            zBuffer[i] = candidateVertexInds[np.argmin(fitting[2, candidateVertexInds])]
+            zBuffer[i] = candidateVertexInds[np.argmin(vertexCoord[2, candidateVertexInds])]
     
     return zBuffer, pixelCoord

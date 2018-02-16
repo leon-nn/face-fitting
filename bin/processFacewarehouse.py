@@ -7,12 +7,6 @@ Created on Fri Feb 16 11:51:41 2018
 """
 import numpy as np
 
-# For computing eigenvalues and eigenvectors via eigsh
-from scipy.sparse.linalg import eigsh
-
-# Just-in-time compiler
-from numba import jit
-
 # Regex for extra help with parsing input .obj files
 import re, os
 

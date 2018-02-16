@@ -9,10 +9,6 @@ import numpy as np
 import h5py
 from sklearn.neighbors import NearestNeighbors
 
-class Bunch(object):
-    def __init__(self, adict):
-        self.__dict__.update(adict)
-
 def processBFM2017(fName, fNameLandmarks):
     """
     Read the face models and landmarks from the Basel Face Model 2017 dataset. Input the filename of the .h5 file and the filename of a .txt file containing the text detailing the landmark locations.
@@ -85,11 +81,3 @@ def processBFM2017(fName, fNameLandmarks):
     
     # Save into an .npz uncompressed file
     np.savez('./models/bfm2017', face = face, idMean = idMean, idEvec = idEvec, idEval = idEval, expMean = expMean, expEvec = expEvec, expEval = expEval, texMean = texMean, texEvec = texEvec, texEval = texEval, landmark = landmark, landmarkInd = landmarkInd, landmarkName = landmarkName, numVertices = numVertices, vertex2face = vertex2face)
-
-m = Bunch(np.load('./models/bfm2017.npz'))
-m.idEvec = m.idEvec[:, :, :80]
-m.idEval = m.idEval[:80]
-m.expEvec = m.expEvec[:, :, :76]
-m.expEval = m.expEval[:76]
-m.texEvec = m.texEvec[:, :, :80]
-m.texEval = m.texEval[:80]

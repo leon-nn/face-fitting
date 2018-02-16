@@ -15,10 +15,6 @@ from mayavi import mlab
 from sklearn.preprocessing import StandardScaler
 import networkx as nx
 
-
-        
-
-
 if __name__ == "__main__":
 
     os.chdir('/home/leon/f2f-fitting/obama/')

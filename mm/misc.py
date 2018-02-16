@@ -6,6 +6,7 @@ Created on Fri Feb 16 11:43:14 2018
 @author: leon
 """
 import numpy as np
+
 def getTexture(dirName, pose = 0):
     """
     Get the RGB values referenced by the texture vertices in the .obj file for each tester. There are 20 poses to choose from from 0 to 19.

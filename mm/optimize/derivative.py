@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
+import numpy as np
+
 def dR_dpsi(angles):
     """
     Derivative of the rotation matrix with respect to the x-axis rotation.

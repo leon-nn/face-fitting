@@ -20,7 +20,7 @@ os.environ["QT_API"] = "pyqt"
 
 #from scipy.stats import mode
 
-from sklearn.neighbors import NearestNeighbors
+
 
 
 from scipy.optimize import minimize

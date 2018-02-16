@@ -7,6 +7,8 @@ Created on Fri Feb 16 11:54:19 2018
 """
 import numpy as np
 import re
+import librosa
+from sklearn.neighbors import NearestNeighbors
 
 def importObj(fName, dataToImport = ['v', 'f']):
     """

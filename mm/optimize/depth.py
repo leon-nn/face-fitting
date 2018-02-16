@@ -7,8 +7,9 @@ Created on Fri Feb 16 11:41:03 2018
 """
 
 import numpy as np
-
-
+from ..utils.mesh import generateFace
+from ..utils.transform import rotMat2angle
+from .derivative import dR_dpsi, dR_dtheta, dR_dphi
 
 """
 For vol2mesh (optimization functions for fitting VRN depth map to image)

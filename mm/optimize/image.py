@@ -6,6 +6,12 @@ Created on Fri Feb 16 14:59:05 2018
 @author: leon
 """
 
+import numpy as np
+from scipy.linalg import block_diag
+from ..utils.mesh import generateFace, generateTexture, barycentricReconstruction
+from ..utils.transform import rotMat2angle
+from .derivative import dR_dpsi, dR_dtheta, dR_dphi
+
 def initialShapeCost2D(P, target, m, sourceLandmarkInds, w = (1, 1)):
     # Shape eigenvector coefficients
     idCoef = P[: m.idEval.size]
@@ -93,14 +99,14 @@ def camWithShape(param, m, lm2d, lm3dInd, cam):
 Barycentric methods for optimizing texture and lighting
 """
 
-def textureCost(texCoef, img, vertexCoord, m, w = (1, 1)):
+def textureCost(texCoef, img, vertexCoord, m, renderObj, w = (1, 1)):
     indexData = m.face.astype(np.uint16)
     vertexColor = m.texMean + np.tensordot(m.texEvec, texCoef, axes = 1)
     
-    openglRender.updateVertexBuffer(np.r_[vertexCoord.T, vertexColor.T].astype(np.float32), indexData)
-    openglRender.resetFramebufferObject()
-    openglRender.render()
-    rendering, pixelCoord = openglRender.grabRendering(img.shape[1], img.shape[0], return_info = True)[:2]
+    renderObj.updateVertexBuffer(np.r_[vertexCoord.T, vertexColor.T].astype(np.float32), indexData)
+    renderObj.resetFramebufferObject()
+    renderObj.render()
+    rendering, pixelCoord = renderObj.grabRendering(img.shape[1], img.shape[0], return_info = True)[:2]
     
     rendering = rendering[pixelCoord[:, 0], pixelCoord[:, 1]]
     img = img[pixelCoord[:, 0], pixelCoord[:, 1]]
@@ -114,14 +120,14 @@ def textureCost(texCoef, img, vertexCoord, m, w = (1, 1)):
     
     return w[0] * Ecol + w[1] * Ereg
 
-def textureGrad(texCoef, img, vertexCoord, m, w = (1, 1)):
+def textureGrad(texCoef, img, vertexCoord, m, renderObj, w = (1, 1)):
     indexData = m.face.astype(np.uint16)
     vertexColor = m.texMean + np.tensordot(m.texEvec, texCoef, axes = 1)
     
-    openglRender.updateVertexBuffer(np.r_[vertexCoord.T, vertexColor.T].astype(np.float32), indexData)
-    openglRender.resetFramebufferObject()
-    openglRender.render()
-    rendering, pixelCoord, pixelFaces, pixelBarycentricCoords = openglRender.grabRendering(img.shape[1], img.shape[0], return_info = True)
+    renderObj.updateVertexBuffer(np.r_[vertexCoord.T, vertexColor.T].astype(np.float32), indexData)
+    renderObj.resetFramebufferObject()
+    renderObj.render()
+    rendering, pixelCoord, pixelFaces, pixelBarycentricCoords = renderObj.grabRendering(img.shape[1], img.shape[0], return_info = True)
     numPixels = pixelFaces.size
     
     rendering = rendering[pixelCoord[:, 0], pixelCoord[:, 1]]
@@ -139,14 +145,14 @@ def textureGrad(texCoef, img, vertexCoord, m, w = (1, 1)):
     
     return 2 * (w[0] * r.dot(J_texCoef) / numPixels + w[1] * texCoef / m.texEval)
 
-def textureResiduals(texCoef, img, vertexCoord, m, w = (1, 1), randomFaces = None):
+def textureResiduals(texCoef, img, vertexCoord, m, renderObj, w = (1, 1), randomFaces = None):
     indexData = m.face.astype(np.uint16)
     vertexColor = m.texMean + np.tensordot(m.texEvec, texCoef, axes = 1)
     
-    openglRender.updateVertexBuffer(np.r_[vertexCoord.T, vertexColor.T].astype(np.float32), indexData)
-    openglRender.resetFramebufferObject()
-    openglRender.render()
-    rendering, pixelCoord = openglRender.grabRendering(img.shape[1], img.shape[0], return_info = True)[:2]
+    renderObj.updateVertexBuffer(np.r_[vertexCoord.T, vertexColor.T].astype(np.float32), indexData)
+    renderObj.resetFramebufferObject()
+    renderObj.render()
+    rendering, pixelCoord = renderObj.grabRendering(img.shape[1], img.shape[0], return_info = True)[:2]
     
     if randomFaces is not None:
         numPixels = randomFaces.size
@@ -159,14 +165,14 @@ def textureResiduals(texCoef, img, vertexCoord, m, w = (1, 1), randomFaces = Non
     
     return np.r_[w[0] / numPixels * (rendering - img).flatten('F'), w[1] * texCoef ** 2 / m.texEval]
 
-def textureJacobian(texCoef, img, vertexCoord, m, w = (1, 1), randomFaces = None):
+def textureJacobian(texCoef, img, vertexCoord, m, renderObj, w = (1, 1), randomFaces = None):
     indexData = m.face.astype(np.uint16)
     vertexColor = m.texMean + np.tensordot(m.texEvec, texCoef, axes = 1)
     
-    openglRender.updateVertexBuffer(np.r_[vertexCoord.T, vertexColor.T].astype(np.float32), indexData)
-    openglRender.resetFramebufferObject()
-    openglRender.render()
-    pixelFaces, pixelBarycentricCoords = openglRender.grabRendering(img.shape[1], img.shape[0], return_info = True)[2:]
+    renderObj.updateVertexBuffer(np.r_[vertexCoord.T, vertexColor.T].astype(np.float32), indexData)
+    renderObj.resetFramebufferObject()
+    renderObj.render()
+    pixelFaces, pixelBarycentricCoords = renderObj.grabRendering(img.shape[1], img.shape[0], return_info = True)[2:]
     
     if randomFaces is not None:
         numPixels = randomFaces.size
@@ -183,7 +189,7 @@ def textureJacobian(texCoef, img, vertexCoord, m, w = (1, 1), randomFaces = None
     
     return np.r_[w[0] / numPixels * J_texCoef, w[1] * np.diag(texCoef / m.texEval)]
 
-def textureLightingCost(texParam, img, vertexCoord, B, m, w = (1, 1), option = 'tl', constCoef = None):
+def textureLightingCost(texParam, img, vertexCoord, B, m, renderObj, w = (1, 1), option = 'tl', constCoef = None):
     """
     Energy formulation for fitting texture and spherical harmonic lighting coefficients
     """
@@ -199,12 +205,12 @@ def textureLightingCost(texParam, img, vertexCoord, B, m, w = (1, 1), option = '
         
     indexData = m.face.astype(np.uint16)
     
-    texture = genTexture(vertexCoord, np.r_[texCoef, lightCoef.flatten()], m)
+    texture = generateTexture(vertexCoord, np.r_[texCoef, lightCoef.flatten()], m)
     
-    openglRender.updateVertexBuffer(np.r_[vertexCoord.T, texture.T].astype(np.float32), indexData)
-    openglRender.resetFramebufferObject()
-    openglRender.render()
-    rendering, pixelCoord = openglRender.grabRendering(img.shape[1], img.shape[0], return_info = True)[:2]
+    renderObj.updateVertexBuffer(np.r_[vertexCoord.T, texture.T].astype(np.float32), indexData)
+    renderObj.resetFramebufferObject()
+    renderObj.render()
+    rendering, pixelCoord = renderObj.grabRendering(img.shape[1], img.shape[0], return_info = True)[:2]
     
     rendering = rendering[pixelCoord[:, 0], pixelCoord[:, 1]]
     img = img[pixelCoord[:, 0], pixelCoord[:, 1]]
@@ -221,7 +227,7 @@ def textureLightingCost(texParam, img, vertexCoord, B, m, w = (1, 1), option = '
     else:
         return w[0] * Ecol + w[1] * Ereg
 
-def textureLightingGrad(texParam, img, vertexCoord, B, m, w = (1, 1), option = 'tl', constCoef = None):
+def textureLightingGrad(texParam, img, vertexCoord, B, m, renderObj, w = (1, 1), option = 'tl', constCoef = None):
     if option is 'tl':
         texCoef = texParam[:m.texEval.size]
         lightCoef = texParam[m.texEval.size:].reshape(9, 3)
@@ -234,12 +240,12 @@ def textureLightingGrad(texParam, img, vertexCoord, B, m, w = (1, 1), option = '
         
     indexData = m.face.astype(np.uint16)
     vertexColor = m.texMean + np.tensordot(m.texEvec, texCoef, axes = 1)
-    texture = genTexture(vertexCoord, np.r_[texCoef, lightCoef.flatten()], m)
+    texture = generateTexture(vertexCoord, np.r_[texCoef, lightCoef.flatten()], m)
     
-    openglRender.updateVertexBuffer(np.r_[vertexCoord.T, texture.T].astype(np.float32), indexData)
-    openglRender.resetFramebufferObject()
-    openglRender.render()
-    rendering, pixelCoord, pixelFaces, pixelBarycentricCoords = openglRender.grabRendering(img.shape[1], img.shape[0], return_info = True)
+    renderObj.updateVertexBuffer(np.r_[vertexCoord.T, texture.T].astype(np.float32), indexData)
+    renderObj.resetFramebufferObject()
+    renderObj.render()
+    rendering, pixelCoord, pixelFaces, pixelBarycentricCoords = renderObj.grabRendering(img.shape[1], img.shape[0], return_info = True)
     numPixels = pixelFaces.size
     
     rendering = rendering[pixelCoord[:, 0], pixelCoord[:, 1]]
@@ -270,7 +276,7 @@ def textureLightingGrad(texParam, img, vertexCoord, B, m, w = (1, 1), option = '
     elif option is 'l':
         return 2 * w[0] * np.r_[r[:, 0].dot(J_lightCoef[0]), r[:, 1].dot(J_lightCoef[1]), r[:, 2].dot(J_lightCoef[2])] / numPixels
     
-def textureLightingResiduals(texParam, img, vertexCoord, B, m, w = (1, 1), randomFaces = None):
+def textureLightingResiduals(texParam, img, vertexCoord, B, m, renderObj, w = (1, 1), randomFaces = None):
     """
     Energy formulation for fitting texture and spherical harmonic lighting coefficients
     """
@@ -279,12 +285,12 @@ def textureLightingResiduals(texParam, img, vertexCoord, B, m, w = (1, 1), rando
         
     indexData = m.face.astype(np.uint16)
     
-    texture = genTexture(vertexCoord, np.r_[texCoef, lightCoef.flatten()], m)
+    texture = generateTexture(vertexCoord, np.r_[texCoef, lightCoef.flatten()], m)
     
-    openglRender.updateVertexBuffer(np.r_[vertexCoord.T, texture.T].astype(np.float32), indexData)
-    openglRender.resetFramebufferObject()
-    openglRender.render()
-    rendering, pixelCoord = openglRender.grabRendering(img.shape[1], img.shape[0], return_info = True)[:2]
+    renderObj.updateVertexBuffer(np.r_[vertexCoord.T, texture.T].astype(np.float32), indexData)
+    renderObj.resetFramebufferObject()
+    renderObj.render()
+    rendering, pixelCoord = renderObj.grabRendering(img.shape[1], img.shape[0], return_info = True)[:2]
     
     if randomFaces is not None:
         numPixels = randomFaces.size
@@ -297,18 +303,18 @@ def textureLightingResiduals(texParam, img, vertexCoord, B, m, w = (1, 1), rando
     
     return np.r_[w[0] / numPixels * (rendering - img).flatten('F'), w[1] * texCoef ** 2 / m.texEval]
 
-def textureLightingJacobian(texParam, img, vertexCoord, B, m, w = (1, 1), randomFaces = None):
+def textureLightingJacobian(texParam, img, vertexCoord, B, m, renderObj, w = (1, 1), randomFaces = None):
     texCoef = texParam[:m.texEval.size]
     lightCoef = texParam[m.texEval.size:].reshape(9, 3)
         
     indexData = m.face.astype(np.uint16)
     vertexColor = m.texMean + np.tensordot(m.texEvec, texCoef, axes = 1)
-    texture = genTexture(vertexCoord, np.r_[texCoef, lightCoef.flatten()], m)
+    texture = generateTexture(vertexCoord, np.r_[texCoef, lightCoef.flatten()], m)
     
-    openglRender.updateVertexBuffer(np.r_[vertexCoord.T, texture.T].astype(np.float32), indexData)
-    openglRender.resetFramebufferObject()
-    openglRender.render()
-    pixelFaces, pixelBarycentricCoords = openglRender.grabRendering(img.shape[1], img.shape[0], return_info = True)[2:]
+    renderObj.updateVertexBuffer(np.r_[vertexCoord.T, texture.T].astype(np.float32), indexData)
+    renderObj.resetFramebufferObject()
+    renderObj.render()
+    pixelFaces, pixelBarycentricCoords = renderObj.grabRendering(img.shape[1], img.shape[0], return_info = True)[2:]
     
     if randomFaces is not None:
         numPixels = randomFaces.size

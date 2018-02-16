@@ -19,7 +19,6 @@ from mm import Bunch, onpick3, exportObj, generateFace, rotMat2angle, initialSha
 from time import clock
 import glob, os, re, json
 import numpy as np
-from scipy.linalg import block_diag
 from scipy.optimize import minimize, check_grad, least_squares, nnls, lsq_linear
 from sklearn.neighbors import NearestNeighbors
 from mpl_toolkits.mplot3d import Axes3D

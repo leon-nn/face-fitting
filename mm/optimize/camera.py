@@ -7,6 +7,7 @@ Created on Fri Feb 16 11:42:30 2018
 """
 
 import numpy as np
+from ..utils.transform import rotMat2angle
 from scipy.linalg import rq
 from scipy.optimize import least_squares
     
@@ -79,42 +80,42 @@ def estCamMat(lm2D, lm3D, cam = 'perspective'):
         # Solve linear system and de-normalize
         p8 = np.linalg.lstsq(A, x.flatten())[0].reshape(2, 4)
         
-        K, R = rq(p8[:, :3], mode = 'economic')
-        R = np.vstack((R[0, :], R[1, :], np.cross(R[0, :], R[1, :])))
-        angles = rotMat2angle(R)
-        param = np.r_[K[0, 0], K[0, 1], K[1, 1], angles, p8[:, 3]]
-        
-        def orthographicCamMatLS(param, x, X, w):
-            # Reconstruct the camera matrix P from the RQ decomposition
-            K = np.array([[param[0], param[1]], [0 , param[2]]])
-            R = rotMat2angle(param[3: 6])[:2, :]
-            P = np.c_[K.dot(R), param[6:]]
-            
-            # Calculate resisduals of landmark correspondences
-            r = x.flatten() - np.dot(X, P.T).flatten()
-    
-            # Calculate residuals for constraints
-            rscale = np.fabs(param[0] - param[2])
-            rskew = param[1]
-    
-            return np.r_[w[0] * r, w[1] * rscale, w[2] * rskew]
-            
-        def orthographicCamMat(param, x, X, w):
-            # Reconstruct the camera matrix P from the RQ decomposition
-            K = np.array([[param[0], param[1]], [0 , param[2]]])
-            R = rotMat2angle(param[3: 6])[:2, :]
-            P = np.c_[K.dot(R), param[6:]]
-            
-            # Calculate resisduals of landmark correspondences
-            r = x.flatten() - np.dot(X, P.T).flatten()
-    
-            # Calculate costs
-            Elan = np.dot(r, r)
-            Escale = np.square(np.fabs(param[0]) - np.fabs(param[2]))
-            Eskew = np.square(param[1])
-    
-            return w[0] * Elan + w[1] * Escale + w[2] * Eskew
-        
+#        K, R = rq(p8[:, :3], mode = 'economic')
+#        R = np.vstack((R[0, :], R[1, :], np.cross(R[0, :], R[1, :])))
+#        angles = rotMat2angle(R)
+#        param = np.r_[K[0, 0], K[0, 1], K[1, 1], angles, p8[:, 3]]
+#        
+#        def orthographicCamMatLS(param, x, X, w):
+#            # Reconstruct the camera matrix P from the RQ decomposition
+#            K = np.array([[param[0], param[1]], [0 , param[2]]])
+#            R = rotMat2angle(param[3: 6])[:2, :]
+#            P = np.c_[K.dot(R), param[6:]]
+#            
+#            # Calculate resisduals of landmark correspondences
+#            r = x.flatten() - np.dot(X, P.T).flatten()
+#    
+#            # Calculate residuals for constraints
+#            rscale = np.fabs(param[0] - param[2])
+#            rskew = param[1]
+#    
+#            return np.r_[w[0] * r, w[1] * rscale, w[2] * rskew]
+#            
+#        def orthographicCamMat(param, x, X, w):
+#            # Reconstruct the camera matrix P from the RQ decomposition
+#            K = np.array([[param[0], param[1]], [0 , param[2]]])
+#            R = rotMat2angle(param[3: 6])[:2, :]
+#            P = np.c_[K.dot(R), param[6:]]
+#            
+#            # Calculate resisduals of landmark correspondences
+#            r = x.flatten() - np.dot(X, P.T).flatten()
+#    
+#            # Calculate costs
+#            Elan = np.dot(r, r)
+#            Escale = np.square(np.fabs(param[0]) - np.fabs(param[2]))
+#            Eskew = np.square(param[1])
+#    
+#            return w[0] * Elan + w[1] * Escale + w[2] * Eskew
+#        
 #        param = minimize(orthographicCamMat, param, args = (x, X, (5, 1, 1)))
 #        param = least_squares(orthographicCamMatLS, param, args = (x, X, (1, 1, 1)), bounds = (np.r_[0, 0, 0, -np.inf*np.ones(5)], np.inf))
 #        K = np.array([[param.x[0], param.x[1]], [0 , param.x[2]]])
