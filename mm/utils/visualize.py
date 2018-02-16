@@ -22,6 +22,19 @@ import skimage.io
 from pylab import savefig
 from tvtk.api import tvtk
 
+def onpick3(event):
+    """
+    Interactive clicking for pyplot scatter plots.
+    Example:
+    fig, ax = plt.subplots()
+    x = ...
+    y = ...
+    col = ax.scatter(x, y, s = 1, picker = True)
+    fig.canvas.mpl_connect('pick_event', onpick3)
+    """
+    ind = event.ind
+    print('onpick3 scatter:', ind, np.take(x, ind), np.take(y, ind))
+    
 def mlab_imshowColor(im, alpha = 255, **kwargs):
     """
     Plot a color image with mayavi.mlab.imshow.
@@ -41,6 +54,38 @@ def mlab_imshowColor(im, alpha = 255, **kwargs):
 
     return
 
+def animate(v, f, saveDir, t = None, alpha = 1):
+    # Create the save directory for the images if it doesn't exist
+    if not saveDir.endswith('/'):
+        saveDir += '/'
+    if not os.path.exists(saveDir):
+        os.makedirs(saveDir)
+    
+    # Render the mesh
+    if t is None:
+        tmesh = mlab.triangular_mesh(v[0, 0, :], v[0, 1, :], v[0, 2, :], f-1, scalars = np.arange(v.shape[2]), color = (1, 1, 1))
+    
+    # Add texture if given
+    else:
+        tmesh = mlab.triangular_mesh(v[0, 0, :], v[0, 1, :], v[0, 2, :], f-1, scalars = np.arange(v.shape[2]))
+        if t.shape[1] is not 3:
+            t = t.T
+        tmesh.module_manager.scalar_lut_manager.lut.table = np.c_[(t * 255), alpha * 255 * np.ones(v.shape[2])].astype(np.uint8)
+#        tmesh.actor.pro2perty.lighting = False
+        
+    # Change viewport to x-y plane and enforce orthographic projection
+    mlab.view(0, 0, 'auto', 'auto')
+    
+    mlab.gcf().scene.parallel_projection = True
+    
+    # Save the first frame, then loop through the rest and save them
+    mlab.savefig(saveDir + '00001.png', figure = mlab.gcf())
+    tms = tmesh.mlab_source
+    for i in range(1, v.shape[0]):
+        fName = '{:0>5}'.format(i + 1)
+        tms.set(x = v[i, 0, :], y = v[i, 1, :], z = v[i, 2, :])
+        mlab.savefig(saveDir + fName + '.png', figure = mlab.gcf())
+        
 if __name__ == "__main__":
     
     m = Bunch(np.load('./models/bfm2017.npz'))

@@ -1,3 +1,8 @@
+data
+misc
+models
+facewarehouse
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]

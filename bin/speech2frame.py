@@ -15,70 +15,9 @@ from mayavi import mlab
 from sklearn.preprocessing import StandardScaler
 import networkx as nx
 
-def animate(v, f, saveDir, t = None, alpha = 1):
-    # Create the save directory for the images if it doesn't exist
-    if not saveDir.endswith('/'):
-        saveDir += '/'
-    if not os.path.exists(saveDir):
-        os.makedirs(saveDir)
-    
-    # Render the mesh
-    if t is None:
-        tmesh = mlab.triangular_mesh(v[0, 0, :], v[0, 1, :], v[0, 2, :], f-1, scalars = np.arange(v.shape[2]), color = (1, 1, 1))
-    
-    # Add texture if given
-    else:
-        tmesh = mlab.triangular_mesh(v[0, 0, :], v[0, 1, :], v[0, 2, :], f-1, scalars = np.arange(v.shape[2]))
-        if t.shape[1] is not 3:
-            t = t.T
-        tmesh.module_manager.scalar_lut_manager.lut.table = np.c_[(t * 255), alpha * 255 * np.ones(v.shape[2])].astype(np.uint8)
-#        tmesh.actor.pro2perty.lighting = False
+
         
-    # Change viewport to x-y plane and enforce orthographic projection
-    mlab.view(0, 0, 'auto', 'auto')
-    
-    mlab.gcf().scene.parallel_projection = True
-    
-    # Save the first frame, then loop through the rest and save them
-    mlab.savefig(saveDir + '00001.png', figure = mlab.gcf())
-    tms = tmesh.mlab_source
-    for i in range(1, v.shape[0]):
-        fName = '{:0>5}'.format(i + 1)
-        tms.set(x = v[i, 0, :], y = v[i, 1, :], z = v[i, 2, :])
-        mlab.savefig(saveDir + fName + '.png', figure = mlab.gcf())
-        
-def speechProc(fName, numFrames, fps, kuro = False, return_time_vec = False):
-    # Load audio tracks, pre-emphasize, and create feature vectors from mfcc, rmse, and deltas of mfcc
-    nfft = 1024
-    hopSamples = 512
-    
-    wav, fs = librosa.load(fName, sr=44100)
-    wav = np.r_[wav[0], wav[1:] - 0.97 * wav[:-1]]
-    mfcc = librosa.feature.mfcc(y = wav, sr = fs, n_mfcc = 13, n_fft = nfft, hop_length = hopSamples)
-    mfcc[0, :] = librosa.feature.rmse(y = wav, n_fft = nfft, hop_length = hopSamples)
-    mfccDelta = librosa.feature.delta(mfcc)
-    audioFeatures = np.r_[mfcc, mfccDelta]
-    
-    # Find audio features that are nearest to video frames in time
-    timeVecVideo = np.linspace(0, numFrames / fps, numFrames)
-    
-    timeVecAudioFeatures = np.linspace(0, audioFeatures.shape[1] * hopSamples / fs, audioFeatures.shape[1])
-    
-    NN = NearestNeighbors(n_neighbors = 1, metric = 'l1')
-    NN.fit(timeVecAudioFeatures.reshape(-1, 1))
-    
-    if kuro:
-        numFrames = np.ceil(audioFeatures.shape[1] * hopSamples / fs * fps).astype(np.int_)
-        distance, ind = NN.kneighbors(timeVecVideo[:numFrames].reshape(-1, 1))
-    else:
-        distance, ind = NN.kneighbors(timeVecVideo.reshape(-1, 1))
-    
-    audioFeaturesSampled = audioFeatures[:, ind.squeeze()]
-    
-    if return_time_vec:
-        return audioFeaturesSampled, timeVecVideo
-    else:
-        return audioFeaturesSampled
+
 
 if __name__ == "__main__":
 
