@@ -58,7 +58,7 @@ def estimateCamMat(lm2D, lm3D, cam = 'orthographic'):
     Args:
         lm2D (ndarray, (n, 2)): landmark x, y coordinates in an image
         lm3D (ndarray, (n, 3)): landmark x, y, z coordinates in the 3DMM
-        cam (string): 'perspective' or 'orthographic' to determine the type of camera projection matrix to return
+        cam (str): 'perspective' or 'orthographic' to determine the type of camera projection matrix to return
     
     Returns:
         ndarray: Camera projection matrix, (2, 4) if 'orthrographic', (3, 4) if 'perspective'
@@ -130,7 +130,7 @@ def splitCamMat(P, cam = 'orthographic'):
     
     Args:
         P (ndarray): A camera projection matrix
-        cam (string): 'perspective' or 'orthographic' to determine how to split the camera projection matrix
+        cam (str): 'perspective' or 'orthographic' to determine how to split the camera projection matrix
     
     Returns:
         (tuple): tuple containing:

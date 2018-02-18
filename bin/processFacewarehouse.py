@@ -6,7 +6,7 @@ from mm.utils.io import exportObj
 import numpy as np
 import re, os
 
-def importObj(dirName, shape = 0, dataToImport = ['v', 'vt', 'f'], pose = 20):
+def importObjFW(dirName, shape = 0, dataToImport = ['v', 'vt', 'f'], pose = 20):
     """
     Return the geometric and texture vertices along with the quadrilaterials containing the geometric and texture indices for all 150 testers of FaceWarehouse for a certain shape/pose/expression. Input (1) a string for the directory name that contains the folders 'Tester_1' through 'Tester_150', (2) an int for the shape number, which is in the range [0, 46] (1 neutral + 46 expressions), and (3) a list containing strings to indicate what part of the .obj file to read ('v' = geometric vertices, 'vt' = texture vertices, 'f' = face quadrilaterals).
     """
@@ -83,7 +83,7 @@ def generateModels(dirName, saveDirName = './'):
         
     # Neutral face
     print('Loading neutral faces')
-    vNeu = importObj(dirName, shape = 0, dataToImport = ['v'])[0]
+    vNeu = importObjFW(dirName, shape = 0, dataToImport = ['v'])[0]
     vNeu = np.reshape(vNeu, (150, vNeu.shape[1]*3))
     
     evalNeu, evecNeu, meanNeu = PCA(vNeu)
@@ -97,7 +97,7 @@ def generateModels(dirName, saveDirName = './'):
     vExp = np.empty((150*46, vNeu.shape[1]))
     for s in range(46):
         print('Loading expression %d' % (s+1))
-        temp = importObj(dirName, shape = s+1, dataToImport = ['v'], pose = 47)[0]
+        temp = importObjFW(dirName, shape = s+1, dataToImport = ['v'], pose = 47)[0]
         # Subtract the neutral shape from the expression shape for each test subject
         vExp[s*150: (s+1)*150, :] = np.reshape(temp, (150, vNeu.shape[1])) - vNeu
     
@@ -163,13 +163,13 @@ def saveMasks(dirName, saveDirName = './masks/', mask = 'faceMask.obj', poses = 
     for shape in range(poses):
         # The reference mask defining the facial region is based off of the first tester in pose/shape 0
         if shape == 0:
-            v = importObj(dirName, shape, dataToImport = ['v'], pose = poses)[0]
-            faceMask = importObj(mask, shape = 0)[0]
+            v = importObjFW(dirName, shape, dataToImport = ['v'], pose = poses)[0]
+            faceMask = importObjFW(mask, shape = 0)[0]
             idx = np.zeros(faceMask.shape[0], dtype = int)
             for i, vertex in enumerate(faceMask):
                 idx[i] = np.where(np.equal(vertex, v[0, :, :]).all(axis = 1))[0]
         else:
-            v = importObj(dirName, shape, dataToImport = ['v'], pose = poses)[0]
+            v = importObjFW(dirName, shape, dataToImport = ['v'], pose = poses)[0]
         
         v = v[:, idx, :]
         

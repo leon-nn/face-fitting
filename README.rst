@@ -1,6 +1,10 @@
 f2f-fitting
 ===========
 
+.. image:: https://readthedocs.org/projects/f2f-fitting/badge/?version=latest
+:target: http://f2f-fitting.readthedocs.io/en/latest/?badge=latest
+:alt: Documentation Status
+
 This is a Python package to fit 3D morphable models (3DMMs) to images and depth maps of faces. It mainly provides classes to work with and render 3DMMs, and functions that use these classes to optimize the objective of fitting 3DMMs to a source RGB image or depth map. The package is tentatively named ``mm``, so to use it, follow the installation instructions below and import it like you would any other Python package. ::
 
 	import mm
