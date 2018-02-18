@@ -1,10 +1,5 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-Created on Wed Dec 20 12:24:40 2017
-
-@author: leon
-"""
 from mm.models import MeshModel
 from mm.utils.opengl import Render
 from mm.optimize.camera import estCamMat, splitCamMat
@@ -22,39 +17,50 @@ from pylab import savefig
 
 if __name__ == "__main__":
     
+    # Change directory to the folder that holds the VRN data, OpenPose landmarks, and original images (frames) from the source video
     os.chdir('/home/leon/f2f-fitting/data/obama/')
+    
+    # Input the number of frames in the video
     numFrames = 2882 #2260 #3744
     
     # Load 3DMM
     m = MeshModel('../../models/bfm2017.npz')
     
-#    plt.ioff()
+    # Initialize shape parameters and 
     param = np.zeros((numFrames, m.idEval.size + m.expEval.size + 7))
+    
+    # Set an orthographic projection for the camera matrix
     cam = 'orthographic'
     
+    # Set weights for the 3DMM RGB color fitting, landmark fitting, and regularization terms
     wCol = 1000
     wLan = 10
     wReg = 1
     
-    for frame in np.arange(1, 1 + 1):
+    for frame in np.arange(1, numFrames + 1):
         print(frame)
         fName = '{:0>5}'.format(frame)
-        fNameImgOrig = 'orig/' + fName + '.png'
-        fNameLandmarks = 'landmark/' + fName + '.json'
         
-        '''
-        Preprocess landmark locations: map to cropped/scaled version of image
-        '''
+        """
+        Set filenames, read landmarks, load source video frames
+        """
+        # Frames from the source video
+        fNameImgOrig = 'orig/' + fName + '.png'
+        
+        # OpenPose landmarks for each frame in the source video
+        fNameLandmarks = 'landmark/' + fName + '.json'
         
         with open(fNameLandmarks, 'r') as fd:
             lm = json.load(fd)
         lm = np.array([l[0] for l in lm], dtype = int).squeeze()[:, :3]
-        lmConf = lm[m.targetLMInd, -1]
+        lmConf = lm[m.targetLMInd, -1]  # This is the confidence value of the landmarks
         lm = lm[m.targetLMInd, :2]
         
-        # Plot the landmarks on the image
+        # Load the source video frame and convert to 64-bit float
         img = io.imread(fNameImgOrig)
         img = img_as_float(img)
+        
+        # You can plot the landmarks over the frames if you want
 #        plt.figure()
 #        plt.imshow(img)
 #        plt.scatter(lm[:, 0], lm[:, 1], s = 2)
@@ -206,42 +212,3 @@ if __name__ == "__main__":
         '''
         Optimization
         '''
-
-#    np.save('../param', param)
-#    np.save('../paramRTS2Orig', np.c_[param[:, :m.idEval.size + m.expEval.size + 3], TS2orig])
-#    np.save('../paramWithoutRTS', np.c_[param[:, :m.idEval.size + m.expEval.size], np.zeros((numFrames, 6)), np.ones(numFrames)])
-#    np.save('../RTS', TS2orig)
-    
-##    source = generateFace(P, m)
-#    #exportObj(generateFace(np.r_[np.zeros(m.idEval.size + m.expEval.size), rho], m), f = m.face, fNameOut = 'initReg')
-#    #exportObj(source, f = m.face, fNameOut = 'source')
-##    exportObj(source[:, m.sourceLMInd], fNameOut = 'sourceLandmarks')
-#    #exportObj(target, fNameOut = 'target')
-#    #exportObj(targetLandmarks, fNameOut = 'targetLandmarks')
-#    
-
-#    param = np.load('../paramRTS2Orig.npy')
-#    if not os.path.exists('../shapesPrecise'):
-#        os.makedirs('../shapesPrecise')
-#    for shape in range(numFrames):
-#        fName = '{:0>5}'.format(shape + 1)
-#        exportObj(generateFace(np.r_[param[shape, :m.idEval.size + m.expEval.size], np.zeros(6), 1], m), f = m.face, fNameOut = '../shapesPrecise/' + fName)
-    
-#    param = np.load('../paramWithoutRTS.npy')
-    
-    
-#    shape = generateFace(np.r_[param[0, :m.idEval.size + m.expEval.size], np.zeros(6), 1], m)
-#    tmesh = mlab.triangular_mesh(shape[0, :], shape[1, :], shape[2, :], m.face, scalars = np.arange(m.numVertices), color = (1, 1, 1))
-##    view = mlab.view()
-#    
-#    if not os.path.exists('../shapePic'):
-#        os.makedirs('../shapePic')
-#    for frame in range(100):
-#        fName = '{:0>5}'.format(frame + 1)
-#        shape = generateFace(np.r_[param[frame, :m.idEval.size + m.expEval.size], np.zeros(6), 1], m)
-#        
-##        mlab.options.offscreen = True
-#        tmesh = mlab.triangular_mesh(shape[0, :], shape[1, :], shape[2, :], m.face, scalars = np.arange(m.numVertices), color = (1, 1, 1))
-#        mlab.view(view[0], view[1], view[2], view[3])
-#        mlab.savefig('../shapePic/' + fName + '.png', figure = mlab.gcf())
-#        mlab.close(all = True)
