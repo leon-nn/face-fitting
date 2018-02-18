@@ -37,20 +37,20 @@ def initialShapeGrad(param, target, model, w = (1, 1)):
     s = param[model.numId + model.numExp:][5]
     
     # The eigenmodel, before rigid transformation and scaling
-    model = model.idMean[:, model.sourceLMInd] + np.tensordot(model.idEvec[:, model.sourceLMInd, :], idCoef, axes = 1) + np.tensordot(model.expEvec[:, model.sourceLMInd, :], expCoef, axes = 1)
+    shape = model.idMean[:, model.sourceLMInd] + np.tensordot(model.idEvec[:, model.sourceLMInd, :], idCoef, axes = 1) + np.tensordot(model.expEvec[:, model.sourceLMInd, :], expCoef, axes = 1)
     
     # After rigid transformation and scaling
-    source = (s*np.dot(R, model) + t[:, np.newaxis])[:2, :]
+    source = (s*np.dot(R, shape) + t[:, np.newaxis])[:2, :]
     
     rlan = (source - target.T).flatten('F')
         
     drV_dalpha = s*np.tensordot(R, model.idEvec[:, model.sourceLMInd, :], axes = 1)
     drV_ddelta = s*np.tensordot(R, model.expEvec[:, model.sourceLMInd, :], axes = 1)
-    drV_dpsi = s*np.dot(dR_dpsi(angles), model)
-    drV_dtheta = s*np.dot(dR_dtheta(angles), model)
-    drV_dphi = s*np.dot(dR_dphi(angles), model)
+    drV_dpsi = s*np.dot(dR_dpsi(angles), shape)
+    drV_dtheta = s*np.dot(dR_dtheta(angles), shape)
+    drV_dphi = s*np.dot(dR_dphi(angles), shape)
     drV_dt = np.tile(np.eye(2), [model.sourceLMInd.size, 1])
-    drV_ds = np.dot(R, model)
+    drV_ds = np.dot(R, shape)
     
     Jlan = np.c_[drV_dalpha[:2, ...].reshape((source.size, idCoef.size), order = 'F'), drV_ddelta[:2, ...].reshape((source.size, expCoef.size), order = 'F'), drV_dpsi[:2, :].flatten('F'), drV_dtheta[:2, :].flatten('F'), drV_dphi[:2, :].flatten('F'), drV_dt, drV_ds[:2, :].flatten('F')]
     

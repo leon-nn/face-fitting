@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-from mm import Bunch, generateFace, exportObj, importObj
+from mm.utils.mesh import generateFace
+from mm.utils.transform import rotMat2angle
+from mm.utils.io import importObj, speechProc
+from mm.models import MeshModel
+
 import os
 import numpy as np
-import librosa
 from sklearn.neighbors import NearestNeighbors
 from sklearn.mixture import GaussianMixture
 from sklearn.cluster import KMeans
@@ -70,61 +73,38 @@ def animate(v, f, saveDir, t = None, alpha = 1):
         mlab.savefig(saveDir + fName + '.png', figure = mlab.gcf())
 
 if __name__ == "__main__":
-
-    os.chdir('/home/leon/f2f-fitting/obama/')
-    numFrames = 2882 #3744 #2260
-    fps = 24
     
-    # Load audio tracks, pre-emphasize, and create feature vectors from mfcc, rmse, and deltas of mfcc
-    nfft = 1024
-    hopSamples = 512
+    # Change to relevant data directory
+    os.chdir('/home/leon/f2f-fitting/data/obama/')
     
-    wav_kuro, fs_kuro = librosa.load('kuro.wav', sr=44100)
-    wav_kuro = np.r_[wav_kuro[0], wav_kuro[1:] - 0.97 * wav_kuro[:-1]]
-    mfcc_kuro = librosa.feature.mfcc(y = wav_kuro, sr = fs_kuro, n_mfcc = 13, n_fft = nfft, hop_length = hopSamples)
-    mfcc_kuro[0, :] = librosa.feature.rmse(y = wav_kuro, n_fft = nfft, hop_length = hopSamples)
-    delta_kuro = librosa.feature.delta(mfcc_kuro)
-    mfcc_kuro = np.r_[mfcc_kuro, delta_kuro]
+    # Specify file name of shiro audio file, number of frames in shiro video, and shiro video FPS
+    fNameSiro = 'siroNorm.wav'
+    numFramesSiro = 2882 #3744 #2260
+    fpsSiro = 24
     
-    wav_siro, fs_siro = librosa.load('siro.wav', sr=44100)
-    wav_siro = np.r_[wav_siro[0], wav_siro[1:] - 0.97 * wav_siro[:-1]]
-    mfcc_siro = librosa.feature.mfcc(y = wav_siro, sr = fs_siro, n_mfcc = 13, n_fft = nfft, hop_length = hopSamples)
-    mfcc_siro[0, :] = librosa.feature.rmse(y = wav_siro, n_fft = nfft, hop_length = hopSamples)
-    delta_siro = librosa.feature.delta(mfcc_siro)
-    mfcc_siro = np.r_[mfcc_siro, delta_siro]
+    # Process audio features for the source (shiro) audio file
+    siroAudioVec, timeVecVideo = speechProc(fNameSiro, numFramesSiro, fpsSiro, return_time_vec = True)
     
-    # Find mfccs that are nearest to video frames in time
-    t_video = np.linspace(0, numFrames / fps, numFrames)
-    
-    t_audio_siro = np.linspace(0, mfcc_siro.shape[1] * hopSamples / fs_siro, mfcc_siro.shape[1])
-    t_audio_kuro = np.linspace(0, mfcc_kuro.shape[1] * hopSamples / fs_kuro, mfcc_kuro.shape[1])
-    
-    NN = NearestNeighbors(n_neighbors = 1, metric = 'l1')
-    
-    NN.fit(t_audio_siro.reshape(-1, 1))
-    distance, ind = NN.kneighbors(t_video.reshape(-1, 1))
-    mfcc_siro_sampled = mfcc_siro[:, ind.squeeze()]
-    
-    NN.fit(t_audio_kuro.reshape(-1, 1))
-    distance, ind = NN.kneighbors(t_video[:2041].reshape(-1, 1))
-    mfcc_kuro_sampled = mfcc_kuro[:, ind.squeeze()]
+    # Process audio features for the target (kuro) audio file
+    fNameKuro = 'kuroNorm.wav'
+    kuroAudioVec = speechProc(fNameKuro, numFramesSiro, fpsSiro, kuro = True)
+    numFramesSiroKuro = kuroAudioVec.shape[1]
     
     # Cluster mfccs. Use 40 clusters -- 39 clusterable phonemes in American English
     M = 40
-    #X = np.c_[mfcc_siro, mfcc_kuro].T
-    X = mfcc_siro.T
+    X = siroAudioVec.T
     gmmObs = GaussianMixture(n_components = M, covariance_type = 'diag')
     gmmObs.fit(X)
     mfcc_classes = gmmObs.means_
     
-    obsLabels_siro = gmmObs.predict(mfcc_siro_sampled.T)
-    obsLabels_kuro = gmmObs.predict(mfcc_kuro_sampled.T)
+    obsLabels_siro = gmmObs.predict(siroAudioVec.T)
+    obsLabels_kuro = gmmObs.predict(kuroAudioVec.T)
     
     # Cluster the mouth vertices from the 3DMMs fitted to the video
     mouthFace = importObj('mouth.obj', dataToImport = ['f'])[0]
-    mouthIdx = np.load('../bfmMouthIdx.npy')
-#    mouthVertices = np.zeros((numFrames, mouthIdx.size, 3))
-#    for i in range(numFrames):
+    mouthIdx = np.load('../../models/bfmMouthIdx.npy')
+#    mouthVertices = np.zeros((numFramesSiro, mouthIdx.size, 3))
+#    for i in range(numFramesSiro):
 #        fName = '{:0>5}'.format(i + 1)
 #        mouthVertices[i, :] = importObj('shapes/' + fName + '.obj', dataToImport = ['v'])[0][mouthIdx, :].flatten()
     
@@ -150,13 +130,7 @@ if __name__ == "__main__":
         
     
     # Find and cluster the features of the video in model-space
-    m = Bunch(np.load('../models/bfm2017.npz'))
-    m.idEvec = m.idEvec[:, :, :80]
-    m.idEval = m.idEval[:80]
-    m.expEvec = m.expEvec[:, :, :76]
-    m.expEval = m.expEval[:76]
-    m.texEvec = m.texEvec[:, :, :80]
-    m.texEval = m.texEval[:80]
+    m = MeshModel('../../models/bfm2017.npz')
     
     param = np.load('paramRTS2Orig.npy')
 #    
@@ -247,12 +221,12 @@ if __name__ == "__main__":
 #    plt.hist(frameDifferences.flatten(), bins = 'auto')
 #    
 #    nextFrame = np.r_[np.diag(frameDifferences, k = 1), frameDifferences[-1, -2]]
-    minFrame = np.min(frameDifferences + frameDifferences.max()*np.eye(numFrames), axis = 1)
+    minFrame = np.min(frameDifferences + frameDifferences.max()*np.eye(numFramesSiro), axis = 1)
     thres = minFrame + 200
 #    
 #    # Calculate pairwise difference between the frames as transition probabilities
-#    videoVec = np.empty((numFrames, mpimg.imread('orig/00001.png').size//3))
-#    for i in range(numFrames):
+#    videoVec = np.empty((numFramesSiro, mpimg.imread('orig/00001.png').size//3))
+#    for i in range(numFramesSiro):
 #        fName = '{:0>5}'.format(i + 1)
 #        videoVec[i, :] = io.imread('orig/' + fName + '.png', as_grey = True).flatten()
 #        
@@ -263,7 +237,7 @@ if __name__ == "__main__":
 #    plt.imshow(frameDifferences1)
 #    plt.figure()
 #    plt.hist(frameDifferences.flatten(), bins = 'auto')
-#    thres = np.min(frameDifferences + frameDifferences.max()*np.eye(numFrames), axis = 1) + 30
+#    thres = np.min(frameDifferences + frameDifferences.max()*np.eye(numFramesSiro), axis = 1) + 30
 #    
     transitionableFrames = frameDifferences < thres[:, np.newaxis]
     np.fill_diagonal(transitionableFrames, False)
@@ -273,7 +247,7 @@ if __name__ == "__main__":
 #    plt.figure()
 #    plt.hist(numTransitionableFrames, bins = numTransitionableFrames.max() - 1)
 #    
-    A = csc_matrix((np.exp(-0.1*frameDifferences[transitionableFrames]), (rowInd, colInd)), shape = (numFrames, numFrames))
+    A = csc_matrix((np.exp(-0.1*frameDifferences[transitionableFrames]), (rowInd, colInd)), shape = (numFramesSiro, numFramesSiro))
     
     A.data /= np.take(A.sum(1).A1, A.indices)
 #    
@@ -285,19 +259,19 @@ if __name__ == "__main__":
 #    
     # Find the frames that match to each clustered 3DMM state and set a uniform PDF for these frames as the emission probabilities
 #    state2frame = [None] * N
-    B = 0.01*np.ones((numFrames, N))
+    B = 0.01*np.ones((numFramesSiro, N))
 #    for i in range(N):
 #        state2frame[i] = np.nonzero(stateLabels == i)[0].tolist()
 #        B[state2frame[i], i] = 1. / len(state2frame[i])
 #    
-    B[np.arange(numFrames), stateLabels] = 1
+    B[np.arange(numFramesSiro), stateLabels] = 1
     B /= B.sum(1)[:, np.newaxis]
 #    
     # Use a uniform PDF over all frames as the initial distribution
-    pi = np.ones(numFrames) / numFrames
+    pi = np.ones(numFramesSiro) / numFramesSiro
     
     # Set up the HMM
-    model = hmm.MultinomialHMM(n_components = numFrames)
+    model = hmm.MultinomialHMM(n_components = numFramesSiro)
     model.startprob_ = pi
     model.transmat_ = A.toarray()
     model.emissionprob_ = B
@@ -307,7 +281,7 @@ if __name__ == "__main__":
     
     # Animations
     s = stateShapes.reshape((N, 3, mouthIdx.size), order = 'F')
-    v = mouthVertices.reshape((numFrames, 3, mouthIdx.size), order = 'F')
+    v = mouthVertices.reshape((numFramesSiro, 3, mouthIdx.size), order = 'F')
     animate(v[:240], mouthFace, 'color/1_origSiroFrames', m.texMean[:, mouthIdx])
     animate(s[stateLabels[:240]], mouthFace, 'color/2_siroKmeansStateSeq', m.texMean[:, mouthIdx])
     animate(s[stateSeq_siro[:240]], mouthFace, 'color/3_siroHMMStateSeq', m.texMean[:, mouthIdx])

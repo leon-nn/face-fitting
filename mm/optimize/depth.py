@@ -36,20 +36,20 @@ def initialShapeGrad(param, target, model, w = (1, 1)):
     s = param[model.numId + model.numExp:][6]
     
     # The eigenmodel, before rigid transformation and scaling
-    model = model.idMean[:, model.sourceLMInd] + np.tensordot(model.idEvec[:, model.sourceLMInd, :], idCoef, axes = 1) + np.tensordot(model.expEvec[:, model.sourceLMInd, :], expCoef, axes = 1)
+    shape = model.idMean[:, model.sourceLMInd] + np.tensordot(model.idEvec[:, model.sourceLMInd, :], idCoef, axes = 1) + np.tensordot(model.expEvec[:, model.sourceLMInd, :], expCoef, axes = 1)
     
     # After rigid transformation and scaling
-    source = s*np.dot(R, model) + t[:, np.newaxis]
+    source = s*np.dot(R, shape) + t[:, np.newaxis]
     
     rlan = (source - target.T).flatten('F')
         
     drV_dalpha = s*np.tensordot(R, model.idEvec[:, model.sourceLMInd, :], axes = 1)
     drV_ddelta = s*np.tensordot(R, model.expEvec[:, model.sourceLMInd, :], axes = 1)
-    drV_dpsi = s*np.dot(dR_dpsi(angles), model)
-    drV_dtheta = s*np.dot(dR_dtheta(angles), model)
-    drV_dphi = s*np.dot(dR_dphi(angles), model)
+    drV_dpsi = s*np.dot(dR_dpsi(angles), shape)
+    drV_dtheta = s*np.dot(dR_dtheta(angles), shape)
+    drV_dphi = s*np.dot(dR_dphi(angles), shape)
     drV_dt = np.tile(np.eye(3), [model.sourceLMInd.size, 1])
-    drV_ds = np.dot(R, model)
+    drV_ds = np.dot(R, shape)
     
     Jlan = np.c_[drV_dalpha.reshape((source.size, idCoef.size), order = 'F'), drV_ddelta.reshape((source.size, expCoef.size), order = 'F'), drV_dpsi.flatten('F'), drV_dtheta.flatten('F'), drV_dphi.flatten('F'), drV_dt, drV_ds.flatten('F')]
     
@@ -105,10 +105,10 @@ def shapeGrad(param, model, target, targetLandmarks, NN, w = (1, 1, 1), calcID =
         targetLandmarks = targetLandmarks.T
     
     # The eigenmodel, before rigid transformation and scaling
-    model = model.idMean + np.tensordot(model.idEvec, idCoef, axes = 1) + np.tensordot(model.expEvec, expCoef, axes = 1)
+    shape = model.idMean + np.tensordot(model.idEvec, idCoef, axes = 1) + np.tensordot(model.expEvec, expCoef, axes = 1)
     
     # After rigid transformation and scaling
-    source = s*np.dot(R, model) + t[:, np.newaxis]
+    source = s*np.dot(R, shape) + t[:, np.newaxis]
     
     # Find the nearest neighbors of the target to the source vertices
     distance, ind = NN.kneighbors(source.T)
@@ -119,11 +119,11 @@ def shapeGrad(param, model, target, targetLandmarks, NN, w = (1, 1, 1), calcID =
     rlan = (source[:, model.sourceLMInd] - targetLandmarks).flatten('F')
         
     drV_ddelta = s*np.tensordot(R, model.expEvec, axes = 1)
-    drV_dpsi = s*np.dot(dR_dpsi(angles), model)
-    drV_dtheta = s*np.dot(dR_dtheta(angles), model)
-    drV_dphi = s*np.dot(dR_dphi(angles), model)
+    drV_dpsi = s*np.dot(dR_dpsi(angles), shape)
+    drV_dtheta = s*np.dot(dR_dtheta(angles), shape)
+    drV_dphi = s*np.dot(dR_dphi(angles), shape)
     drV_dt = np.tile(np.eye(3), [model.numVertices, 1])
-    drV_ds = np.dot(R, model)
+    drV_ds = np.dot(R, shape)
     
     if calcID:
         

@@ -18,7 +18,7 @@ from pylab import savefig
 if __name__ == "__main__":
     
     # Change directory to the folder that holds the VRN data, OpenPose landmarks, and original images (frames) from the source video
-    os.chdir('/home/leon/f2f-shape/data/obama/')
+    os.chdir('/home/leon/f2f-fitting/data/obama/')
     
     # Input the number of frames in the video
     numFrames = 2882 #2260 #3744
@@ -111,12 +111,12 @@ if __name__ == "__main__":
         # Plot the 3DMM in 3D
 #        fig = plt.figure()
 #        ax = fig.add_subplot(111, projection='3d')
-#        ax.scatter(shape[0, :], shape[1, :], shape[2, :])
+#        ax.scatter(vertexCoords[0, :], vertexCoords[1, :], vertexCoords[2, :])
         
         # Plot the 3DMM landmarks with the OpenPose landmarks over the image
 #        plt.figure()
 #        plt.imshow(img)
-#        plt.scatter(shape[0, m.sourceLMInd], shape[1, m.sourceLMInd], s = 3, c = 'b')
+#        plt.scatter(vertexCoords[0, m.sourceLMInd], vertexCoords[1, m.sourceLMInd], s = 3, c = 'b')
 #        plt.scatter(lm[:, 0], lm[:, 1], s = 2, c = 'r')
         
         # Rendering of initial 3DMM shape with mean texture model
@@ -217,13 +217,13 @@ if __name__ == "__main__":
         """
         texParam2 = texParam.copy()
         
-#        check_grad(opt.textureLightingCost, opt.textureLightingGrad, texParam, img, vertexCoords, B, m)
+#        check_grad(opt.textureLightingCost, opt.textureLightingGrad, texParam, img, vertexCoords, B, m, renderObj)
         
         # Jointly optimize the texture and spherical harmonic lighting coefficients
         cost = np.zeros(10)
         for i in range(10):
             randomFaces = np.random.randint(0, pixelFaces.size, numRandomFaces)
-            initTexLight = least_squares(opt.textureLightingResiduals, texParam2, jac = opt.textureLightingJacobian, args = (img, vertexCoords, B, m, (1, 1), randomFaces), loss = 'soft_l1', max_nfev = 100)
+            initTexLight = least_squares(opt.textureLightingResiduals, texParam2, jac = opt.textureLightingJacobian, args = (img, vertexCoords, B, m, renderObj, (1, 1), randomFaces), loss = 'soft_l1', max_nfev = 100)
             texParam2 = initTexLight['x']
             cost[i] = initTexLight.cost
             

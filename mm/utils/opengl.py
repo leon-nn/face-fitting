@@ -77,6 +77,14 @@ void main()
 class Render:
     """OpenGL rendering class
     
+    Args:
+        width (int): Pixel width of window/viewport
+        height (int): Pixel height of window/viewport
+        meshData (ndarray): 3DMM vertex coordinates and RGB values, concatenated vertically
+        indexData (ndarray): 3DMM vertex indices for each triangular face
+        indexed (bool): Determines whether or not to do indexed OpenGL drawing
+        img (ndarray, (height, width, 1 or 3)): Optional background image for rendering
+            
     Attributes:
         width (int): Pixel width of window/viewport
         height (int): Pixel height of window/viewport
@@ -94,15 +102,6 @@ class Render:
         numStoredVertices (int): Number of 3DMM vertices stored in the VBO
     """
     def __init__(self, width, height, meshData, indexData, indexed = False, img = None):
-        """
-        Args:
-            width (int): Pixel width of window/viewport
-            height (int): Pixel height of window/viewport
-            meshData (ndarray): 3DMM vertex coordinates and RGB values, concatenated vertically
-            indexData (ndarray): 3DMM vertex indices for each triangular face
-            indexed (bool): Determines whether or not to do indexed OpenGL drawing
-            img (ndarray, (height, width, 1 or 3)): Optional background image for rendering
-        """
         # Initialize input
         self.width = width
         self.height = height

@@ -1,12 +1,21 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+"""This module contains functions that concern operations on 3DMMs. Perhaps these will be integrated into the MeshModel class later on.
+"""
 import numpy as np
 from .transform import rotMat2angle, sh9
 from sklearn.preprocessing import normalize
 
 def generateFace(param, model, ind = None):
-    """
-    Generate vertices based off of eigenmodel and vector of parameters
+    """Generates vertex coordinates based on the 3DMM eigenmodel and the shape identity parameters, the shape facial expression parameters, and the similarity transform parameters.
+    
+    Args:
+        param (ndarray): Contains the concatenation of the shape identity parameters, the shape facial expression parameters, the three Euler angles, the three translation vector terms in Cartesian space, and a scaling factor. The amount of shape parameters should match the number of shape eigenvectors in the 3DMM.
+        model (MeshModel): 3DMM MeshModel class object
+        ind (ndarray): Optional, a list of certain vertex indices in the 3DMM to return
+    
+    Returns:
+        ndarray: vertex coordinates
     """
     # Shape eigenvector coefficients
     idCoef = param[: model.numId]
@@ -27,7 +36,16 @@ def generateFace(param, model, ind = None):
     return s*np.dot(R, model) + t[:, np.newaxis]
 
 def generateTexture(vertexCoord, texParam, model):
-            
+    """Generates vertex colors based on the 3DMM eigenmodel, the vertex coordinates, and the texture parameters and spherical harmonic lighting parameters.
+    
+    Args:
+        vertexCoord (ndarray): Vertex coordinates for the 3DMM, (3, numVertices)
+        texParam (ndarray): Contains the concatenation of the texture parameters and a flattened version of the spherical harmonic lighting parameters such as the lighting parameters for each color channel are grouped together. The amount of texture parameters should match the number of texture eigenvectors in the 3DMM.
+        model (MeshModel): 3DMM MeshModel class object
+    
+    Returns:
+        ndarray, (3, numVertices): vertex RGB colors
+    """
     texCoef = texParam[:model.texEval.size]
     shCoef = texParam[model.texEval.size:].reshape(9, 3)
     
@@ -44,6 +62,17 @@ def generateTexture(vertexCoord, texParam, model):
     return I
 
 def barycentricReconstruction(vertices, pixelFaces, pixelBarycentricCoords, indexData):
+    """Reconstructs per-pixel attributes from a barycentric combination of the vertices in the triangular face underlying the pixel.
+    
+    Args:
+        vertices (ndarray): An array of a certain per-vertex attribute, e.g., vertex coordinates, vertex colors, spherical harmonic bases, etc., (n, numVertices)
+        pixelFaces (ndarray): The triangular face IDs for each pixel where the 3DMM is drawn, (numPixels,)
+        pixelBarycentricCoords (ndarray): The barycentric coordinates of the vertices on the triangular face underlying each pixel where the 3DMM is drawn, (numPixels, 3)
+        indexData (ndarray): An array containing the vertex indices for each face, (numFaces, 3)
+    
+    Returns:
+        ndarray: The per-pixel barycentric reconstruction of the desired per-vertex attribute
+    """
     pixelVertices = indexData[pixelFaces, :]
     
     if len(vertices.shape) is 1:
@@ -52,21 +81,34 @@ def barycentricReconstruction(vertices, pixelFaces, pixelBarycentricCoords, inde
     numChannels = vertices.shape[0]
         
     colorMat = vertices[:, pixelVertices.flat].reshape((numChannels, 3, pixelFaces.size), order = 'F')
+    
     return np.einsum('ij,kji->ik', pixelBarycentricCoords, colorMat)
 
-def calcNormals(vertices, model):
+def calcNormals(vertexCoord, model):
+    """Calculates the per-vertex normal vectors for a model given shape coefficients.
+    
+    Args:
+        vertexCoord (ndarray): Vertex coordinates for the 3DMM, (3, numVertices)
+        model (MeshModel): 3DMM MeshModel class object
+    
+    Returns:
+        ndarray: Per-vertex normal vectors
     """
-    Calculate the per-vertex normal vectors for a model given shape coefficients
-    """
-    faceNorm = np.cross(vertices[:, model.face[:, 0]] - vertices[:, model.face[:, 1]], vertices[:, model.face[:, 0]] - vertices[:, model.face[:, 2]], axisa = 0, axisb = 0)
+    faceNorm = np.cross(vertexCoord[:, model.face[:, 0]] - vertexCoord[:, model.face[:, 1]], vertexCoord[:, model.face[:, 0]] - vertexCoord[:, model.face[:, 2]], axisa = 0, axisb = 0)
     
     vNorm = np.array([np.sum(faceNorm[faces, :], axis = 0) for faces in model.vertex2face])
     
     return normalize(vNorm)
 
 def subdivide(v, f):
-    """
-    Use Catmull-Clark subdivision to subdivide a quad-mesh, increasing the number of faces by 4 times. Input the vertices and the face-vertex index mapping.
+    """Uses Catmull-Clark subdivision to subdivide a 3DMM with quadrilateral faces, increasing the number of faces by 4 times.
+    
+    Args:
+        v (ndarray): Vertex coordinates for the 3DMM, (4, numVertices)
+        f (ndarray): An array containing the vertex indices for each quadrilateral face, (numFaces, 4)
+    
+    Returns:
+        tuple: Subdivided vertex coordinates and array of vertex indices
     """
     from collections import defaultdict
     from itertools import chain, compress
