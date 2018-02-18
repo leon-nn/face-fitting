@@ -1,10 +1,5 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-Created on Fri Feb 16 11:55:01 2018
-
-@author: leon
-"""
 import numpy as np
 import h5py
 from sklearn.neighbors import NearestNeighbors

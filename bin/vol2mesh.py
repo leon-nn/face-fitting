@@ -32,7 +32,7 @@ if __name__ == "__main__":
 #    plt.ioff()
     
     # Initialize a (numFrames, numParameters) array to store the learned 3DMM parameters for each frame
-    param = np.zeros((numFrames, m.idEval.size + m.expEval.size + 7))
+    param = np.zeros((numFrames, m.numId + m.numExp + 7))
     
     # Initialize a (numFrames, 4) array to store the translation vector (3,) and scaling factor (1,) for each frame. During the loop, we fit the 3DMM to the VRN cropped and scaled image, so this array contains the information to transform the 3DMM back to the original image.
     TS2orig = np.zeros((numFrames, 4))
@@ -186,14 +186,14 @@ if __name__ == "__main__":
             rho = initialRegistration(m.idMean[:, m.sourceLMInd], targetLandmarks)
             
             # Initialize the parameters: the shape coefficients are all 0, and we concatenate the similarity transform parameters at the end
-            P = np.r_[np.zeros(m.idEval.size + m.expEval.size), rho]
+            P = np.r_[np.zeros(m.numId + m.numExp), rho]
             
             # Find initial guess of shape coefficients while simulataneously optimizing the similarity transform paramters
-            initFit = minimize(opt.initialShapeCost, P, args = (targetLandmarks, m, m.sourceLMInd, (wLan, wReg)), jac = opt.initialShapeGrad)
+            initFit = minimize(opt.initialShapeCost, P, args = (targetLandmarks, m, (wLan, wReg)), jac = opt.initialShapeGrad)
             P = initFit.x
             
             # You can use check_grad from scipy.optimize to make sure your analytical gradient is close to the numerical gradient
-#            grad = check_grad(initialShapeCost, initialShapeGrad, P, targetLandmarks, m, m.sourceLMInd)
+#            grad = check_grad(initialShapeCost, initialShapeGrad, P, targetLandmarks, m)
             
             # You can plot the 3DMM landmarks to check the initial shape parameter guess
 #            source = generateFace(P, m)
@@ -203,7 +203,7 @@ if __name__ == "__main__":
         
         # For the following frames in the video, only do initial registration of similarity transform parameters
         else:
-            P[-7:] = initialRegistration(generateFace(np.r_[P[:m.idEval.size + m.expEval.size], np.zeros(6), 1], m, ind = m.sourceLMInd), targetLandmarks)
+            P[-7:] = initialRegistration(generateFace(np.r_[P[:m.numId + m.numExp], np.zeros(6), 1], m, ind = m.sourceLMInd), targetLandmarks)
         
         '''
         Optimization
@@ -215,16 +215,16 @@ if __name__ == "__main__":
         NN = NearestNeighbors(n_neighbors = 1, metric = 'l2')
         NN.fit(target)
         
-#        grad = check_grad(shapeCost, shapeGrad, P, m, target, targetLandmarks, m.sourceLMInd, NN, False)
+#        grad = check_grad(shapeCost, shapeGrad, P, m, target, targetLandmarks, NN, False)
         
         # For the first 20 frames, we learn the 3DMM shape identity parameters of the speaker in the video along with all the other parameters (this is set by the last the 'True' boolean argument)
         if frame <= 20:
-            optFit = minimize(opt.shapeCost, P, args = (m, target, targetLandmarks, m.sourceLMInd, NN, (wVer, wLan, wReg), True), jac = opt.shapeGrad, options = {'maxiter': 40})
+            optFit = minimize(opt.shapeCost, P, args = (m, target, targetLandmarks, NN, (wVer, wLan, wReg), True), jac = opt.shapeGrad, options = {'maxiter': 40})
             P = optFit['x']
         
         # After the first 20 frames, we assume the shape identity parameters will be the same, so we can exclude them from the optimization to save time (note that the 'True' argument is now 'False')
         else:
-            optFit = minimize(opt.shapeCost, P, args = (m, target, targetLandmarks, m.sourceLMInd, NN, (wVer, wLan, wReg), False), jac = opt.shapeGrad, options = {'maxiter': 40})
+            optFit = minimize(opt.shapeCost, P, args = (m, target, targetLandmarks, NN, (wVer, wLan, wReg), False), jac = opt.shapeGrad, options = {'maxiter': 40})
             P = optFit['x']
         
         # You can generate the vertices with a set of parameters and the model
@@ -269,7 +269,7 @@ if __name__ == "__main__":
             TS2orig[frame - 1, :2] = (P[-4: -2] + cropCorner * (cropCorner > 0) - (192 - (scaledImgDim - cropCorner * (cropCorner > 0))) / 2) / scale
         
         # You can now plot the 3DMM over the original image
-        source = generateFace(np.r_[P[:m.idEval.size + m.expEval.size + 3], TS2orig[frame - 1, :]], m)
+        source = generateFace(np.r_[P[:m.numId + m.numExp + 3], TS2orig[frame - 1, :]], m)
         plt.figure()
         plt.imshow(imgOrig)
         plt.scatter(source[0, :], source[1, :], s = 1)
@@ -286,13 +286,13 @@ if __name__ == "__main__":
 #    np.save('temp/param', param)
 #    
 #    # These map the 3DMM to the original image
-#    np.save('temp/paramRTS2Orig', np.c_[param[:, :m.idEval.size + m.expEval.size + 3], TS2orig])
+#    np.save('temp/paramRTS2Orig', np.c_[param[:, :m.numId + m.numExp + 3], TS2orig])
 #    
 #    # These are just the similarity transform parameters from the parameters above
 #    np.save('temp/RTS', np.c_[param[:, -7: -4], TS2orig])
 #    
 #    # These are the 3DMM parameters in model space
-#    np.save('temp/paramWithoutRTS', np.c_[param[:, :m.idEval.size + m.expEval.size], np.zeros((numFrames, 6)), np.ones(numFrames)])
+#    np.save('temp/paramWithoutRTS', np.c_[param[:, :m.numId + m.numExp], np.zeros((numFrames, 6)), np.ones(numFrames)])
     
     """
     You can export .obj files for each frame
@@ -303,7 +303,7 @@ if __name__ == "__main__":
 #        os.makedirs('shapes')
 #    for shape in range(numFrames):
 #        fName = '{:0>5}'.format(shape + 1)
-#        exportObj(generateFace(np.r_[param[shape, :m.idEval.size + m.expEval.size], np.zeros(6), 1], m), f = m.face, fNameOut = 'shapes/' + fName)
+#        exportObj(generateFace(np.r_[param[shape, :m.numId + m.numExp], np.zeros(6), 1], m), f = m.face, fNameOut = 'shapes/' + fName)
 
     """
     You can use Mayavi to make an animation of the learned 3DMMs
@@ -311,7 +311,7 @@ if __name__ == "__main__":
 #    os.environ["QT_API"] = "pyqt"
 #    from mayavi import mlab
 #    param = np.load('paramWithoutRTS.npy')
-#    shape = generateFace(np.r_[param[0, :m.idEval.size + m.expEval.size], np.zeros(6), 1], m)
+#    shape = generateFace(np.r_[param[0, :m.numId + m.numExp], np.zeros(6), 1], m)
 #    tmesh = mlab.triangular_mesh(shape[0, :], shape[1, :], shape[2, :], m.face, scalars = np.arange(m.numVertices), color = (1, 1, 1))
 ##    view = mlab.view()
 #    
@@ -319,7 +319,7 @@ if __name__ == "__main__":
 #        os.makedirs('shapePic')
 #    for frame in range(100):
 #        fName = '{:0>5}'.format(frame + 1)
-#        shape = generateFace(np.r_[param[frame, :m.idEval.size + m.expEval.size], np.zeros(6), 1], m)
+#        shape = generateFace(np.r_[param[frame, :m.numId + m.numExp], np.zeros(6), 1], m)
 #        
 #        tmesh = mlab.triangular_mesh(shape[0, :], shape[1, :], shape[2, :], m.face, scalars = np.arange(m.numVertices), color = (1, 1, 1))
 #        mlab.view(view[0], view[1], view[2], view[3])

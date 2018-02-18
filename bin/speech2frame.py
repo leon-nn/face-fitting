@@ -1,11 +1,5 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-Created on Fri Jan 19 16:07:52 2018
-
-@author: leon
-"""
-
 from mm.utils.mesh import generateFace
 from mm.utils.transform import rotMat2angle
 from mm.utils.io import importObj, speechProc
@@ -45,9 +39,9 @@ if __name__ == "__main__":
     # Load 3DMM parameters for the shiro video, scaling some for a distance measure
     scaler = StandardScaler()
     param = np.load('paramRTS2Orig.npy')    # Parameters to orthographically project 3DMM onto shiro frame images
-    expCoef = scaler.fit_transform(param[:, m.idEval.size: m.idEval.size + m.expEval.size])
-    angles = param[:, m.idEval.size + m.expEval.size: m.idEval.size + m.expEval.size + 3]
-    trans = scaler.fit_transform(param[:, m.idEval.size + m.expEval.size + 3: m.idEval.size + m.expEval.size + 5])
+    expCoef = scaler.fit_transform(param[:, m.numId: m.numId + m.numExp])
+    angles = param[:, m.numId + m.numExp: m.numId + m.numExp + 3]
+    trans = scaler.fit_transform(param[:, m.numId + m.numExp + 3: m.numId + m.numExp + 5])
     R = np.empty((numFramesSiro, 3, 3))
     for i in range(numFramesSiro):
         R[i, ...] = rotMat2angle(angles[i, :])
@@ -136,6 +130,4 @@ if __name__ == "__main__":
         # Animate the reenactment and save
         v = mouthVertices.reshape((numFramesSiro, 3, mouthIdx.size), order = 'F')
         animate(v[optPath], mouthFace, 'temp/' + os.path.splitext(os.path.basename(fNameKuro))[0], m.texMean[:, mouthIdx])
-        
-        
         break

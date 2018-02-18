@@ -1,10 +1,5 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-Created on Mon Dec  4 15:02:36 2017
-
-@author: leon
-"""
 from mm import Bunch, generateFace, exportObj, importObj
 import os
 import numpy as np

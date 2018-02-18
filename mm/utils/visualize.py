@@ -1,11 +1,5 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-Created on Fri Dec 22 18:43:01 2017
-
-@author: leon
-"""
-
 import os
 os.environ["QT_API"] = "pyqt"
 import numpy as np

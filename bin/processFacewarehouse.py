@@ -1,13 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-Created on Fri Feb 16 11:51:41 2018
+from mm.utils.transform import PCA
+from mm.utils.io import exportObj
 
-@author: leon
-"""
 import numpy as np
-
-# Regex for extra help with parsing input .obj files
 import re, os
 
 def importObj(dirName, shape = 0, dataToImport = ['v', 'vt', 'f'], pose = 20):

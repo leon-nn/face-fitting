@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 from mm.models import MeshModel
 from mm.utils.opengl import Render
-from mm.optimize.camera import estCamMat, splitCamMat
+from mm.optimize.camera import estimateCamMat, splitCamMat
 import mm.optimize.image as opt
 from mm.utils.mesh import calcNormals, generateFace, generateTexture, barycentricReconstruction
 from mm.utils.transform import sh9
@@ -18,7 +18,7 @@ from pylab import savefig
 if __name__ == "__main__":
     
     # Change directory to the folder that holds the VRN data, OpenPose landmarks, and original images (frames) from the source video
-    os.chdir('/home/leon/f2f-fitting/data/obama/')
+    os.chdir('/home/leon/f2f-shape/data/obama/')
     
     # Input the number of frames in the video
     numFrames = 2882 #2260 #3744
@@ -26,13 +26,10 @@ if __name__ == "__main__":
     # Load 3DMM
     m = MeshModel('../../models/bfm2017.npz')
     
-    # Initialize shape parameters and 
-    param = np.zeros((numFrames, m.idEval.size + m.expEval.size + 7))
-    
     # Set an orthographic projection for the camera matrix
     cam = 'orthographic'
     
-    # Set weights for the 3DMM RGB color fitting, landmark fitting, and regularization terms
+    # Set weights for the 3DMM RGB color shape, landmark shape, and regularization terms
     wCol = 1000
     wLan = 10
     wReg = 1
@@ -79,79 +76,87 @@ if __name__ == "__main__":
 #        ax.scatter(x, y, s = 2, c = 'b', picker = True)
 #        fig.canvas.mpl_connect('pick_event', onpick3)
         
-        '''
-        Initial registration
-        '''
+        """
+        Initial registration of similarity transform and shape coefficients
+        """
         
+        # Initialize 3DMM parameters for the first frame
         if frame == 1:
             idCoef = np.zeros(m.idEval.size)
             expCoef = np.zeros(m.expEval.size)
             texCoef = np.zeros(m.texEval.size)
-#            texCoef = np.random.rand(m.texEval.size)
             param = np.r_[np.zeros(m.idEval.size + m.expEval.size + 6), 1]
         
-        # Get the 3D xyz values of the 3DMM landmarks
+        # Get the vertex values of the 3DMM landmarks
         lm3D = generateFace(param, m, ind = m.sourceLMInd).T
         
         # Estimate the camera projection matrix from the landmark correspondences
-        P = estCamMat(lm, lm3D, 'orthographic')
+        camMat = estimateCamMat(lm, lm3D, 'orthographic')
         
         # Factor the camera projection matrix into the intrinsic camera parameters and the rotation/translation similarity transform parameters
-        s, angles, t = splitCamMat(P, 'orthographic')
+        s, angles, t = splitCamMat(camMat, 'orthographic')
         
+        # Concatenate parameters for input into optimization routine. Note that the translation vector here is only (2,) for x and y (no z)
         param = np.r_[idCoef, expCoef, angles, t, s]
         
-        initFit = minimize(opt.initialShapeCost, param, args = (lm, m, m.sourceLMInd, (wLan, wReg)), jac = opt.initialShapeGrad)
+        # Initial optimization of shape parameters with similarity transform parameters
+        initFit = minimize(opt.initialShapeCost, param, args = (lm, m, (wLan, wReg)), jac = opt.initialShapeGrad)
         param = initFit.x
         idCoef = param[:m.idEval.size]
         expCoef = param[m.idEval.size: m.idEval.size+m.expEval.size]
         
-        # Project 3D model into 2D plane
-        fitting = generateFace(np.r_[param[:-1], 0, param[-1]], m)
-            
-        # Plot the projected 3D model on top of the input RGB image
+        # Generate 3DMM vertices from shape and similarity transform parameters
+        shape = generateFace(np.r_[param[:-1], 0, param[-1]], m)
+        
+        # Plot the 3DMM in 3D
 #        fig = plt.figure()
 #        ax = fig.add_subplot(111, projection='3d')
-#        ax.scatter(fitting[0, :], fitting[1, :], fitting[2, :])
+#        ax.scatter(shape[0, :], shape[1, :], shape[2, :])
         
+        # Plot the 3DMM landmarks with the OpenPose landmarks over the image
 #        plt.figure()
 #        plt.imshow(img)
-#        plt.scatter(fitting[0, :], fitting[1, :], s = 0.1, c = 'g')
-#        plt.scatter(fitting[0, m.sourceLMInd], fitting[1, m.sourceLMInd], s = 3, c = 'b')
+#        plt.scatter(shape[0, m.sourceLMInd], shape[1, m.sourceLMInd], s = 3, c = 'b')
 #        plt.scatter(lm[:, 0], lm[:, 1], s = 2, c = 'r')
         
-        # Rendering of initial shape
+        # Rendering of initial 3DMM shape with mean texture model
         texture = m.texMean
-        meshData = np.r_[fitting.T, texture.T]
-        indexData = m.face
-        renderObj = Render(img.shape[1], img.shape[0], meshData, indexData)
+        meshData = np.r_[shape.T, texture.T]
+        renderObj = Render(img.shape[1], img.shape[0], meshData, m.face)
         renderObj.render()
         rendering, pixelCoord, pixelFaces, pixelBarycentricCoords = renderObj.grabRendering(return_info = True)
         
+        # Plot rendering
         plt.figure()
         plt.imshow(rendering)
         
-#        imgReconstruction = barycentricReconstruction(texture, pixelFaces, pixelBarycentricCoords, indexData)
-#        reconstruction = np.zeros(rendering.shape)
-#        reconstruction[pixelCoord[:, 0], pixelCoord[:, 1], :] = imgReconstruction
-#        
-#        plt.figure()
-#        plt.imshow(np.fabs(reconstruction - rendering))
+        # Using the barycentric parameters from the rendering, we can reconstruct the image with the 3DMM texture model by taking barycentric combinations of the 3DMM RGB values defined at the vertices
+        imgReconstruction = barycentricReconstruction(texture, pixelFaces, pixelBarycentricCoords, m.face)
         
-        # Get initial texture estimate
+        # Put values from the reconstruction into a (height, width, 3) array for plotting
+        reconstruction = np.zeros(rendering.shape)
+        reconstruction[pixelCoord[:, 0], pixelCoord[:, 1], :] = imgReconstruction
+        
+        # Plot the difference of the reconstruction with the rendering to see that they are very close-- the output values should be close to 0
+        plt.figure()
+        plt.imshow(np.fabs(reconstruction - rendering))
+        
+        """
+        Get initial texture parameter guess
+        """
         
         numRandomFaces = 10000
         
         cost = np.zeros(20)
         for i in range(20):
             randomFaces = np.random.randint(0, pixelFaces.size, numRandomFaces)
-            initTex = least_squares(opt.textureResiduals, texCoef, jac = opt.textureJacobian, args = (img, fitting, m, renderObj, (wCol, wReg), randomFaces), loss = 'soft_l1')
+            initTex = least_squares(opt.textureResiduals, texCoef, jac = opt.textureJacobian, args = (img, shape, m, renderObj, (wCol, wReg), randomFaces), loss = 'soft_l1')
             texCoef = initTex['x']
             cost[i] = initTex.cost
         
         texture = m.texMean + np.tensordot(m.texEvec, texCoef, axes = 1)
         
-        renderObj.updateVertexBuffer(np.r_[fitting.T, texture.T])
+        renderObj.updateVertexBuffer(np.r_[shape.T, texture.T])
         renderObj.resetFramebufferObject()
         renderObj.render()
         rendering, pixelCoord, pixelFaces, pixelBarycentricCoords = renderObj.grabRendering(return_info = True)
@@ -159,8 +164,12 @@ if __name__ == "__main__":
         plt.figure()
         plt.imshow(rendering)
         
+        """
+        Get initial spherical harmonic lighting parameter guess
+        """
+        
         # Evaluate spherical harmonics at face shape normals
-        vertexNorms = calcNormals(fitting, m)
+        vertexNorms = calcNormals(shape, m)
         B = sh9(vertexNorms[:, 0], vertexNorms[:, 1], vertexNorms[:, 2])
         
         imgMasked = img[pixelCoord[:, 0], pixelCoord[:, 1]]
@@ -168,14 +177,14 @@ if __name__ == "__main__":
         I = np.empty((3, pixelFaces.size, 9))
         l = np.empty((9, 3))
         for c in range(3):
-            I[c, ...] = barycentricReconstruction(B * texture[c, :], pixelFaces, pixelBarycentricCoords, indexData)
+            I[c, ...] = barycentricReconstruction(B * texture[c, :], pixelFaces, pixelBarycentricCoords, m.face)
 #            l[:, c] = nnls(I[c, ...], imgMasked[:, c])[0]
             l[:, c] = lsq_linear(I[c, ...], imgMasked[:, c]).x
         
         texParam = np.r_[texCoef, l.flatten()]
-        textureWithLighting = generateTexture(fitting, texParam, m)
+        textureWithLighting = generateTexture(shape, texParam, m)
         
-        renderObj.updateVertexBuffer(np.r_[fitting.T, textureWithLighting.T])
+        renderObj.updateVertexBuffer(np.r_[shape.T, textureWithLighting.T])
         renderObj.resetFramebufferObject()
         renderObj.render()
         rendering, pixelCoord, pixelFaces, pixelBarycentricCoords = renderObj.grabRendering(return_info = True)
@@ -183,14 +192,18 @@ if __name__ == "__main__":
         plt.figure()
         plt.imshow(rendering)
         break
+        
+        """
+        Optimization over texture and lighting parameters
+        """
         texParam2 = texParam.copy()
         
-#        check_grad(textureLightingCost2, textureLightingGrad2, texParam, img, fitting, B, m, (1, 1))
+#        check_grad(textureLightingCost2, textureLightingGrad2, texParam, img, shape, B, m, (1, 1))
         
         cost = np.zeros(10)
         for i in range(10):
             randomFaces = np.random.randint(0, pixelFaces.size, numRandomFaces)
-            initTexLight = least_squares(opt.textureLightingResiduals, texParam2, jac = opt.textureLightingJacobian, args = (img, fitting, B, m, (1, 1), randomFaces), loss = 'soft_l1', max_nfev = 100)
+            initTexLight = least_squares(opt.textureLightingResiduals, texParam2, jac = opt.textureLightingJacobian, args = (img, shape, B, m, (1, 1), randomFaces), loss = 'soft_l1', max_nfev = 100)
             texParam2 = initTexLight['x']
             cost[i] = initTexLight.cost
             
@@ -198,17 +211,18 @@ if __name__ == "__main__":
         texCoef = texParam[:m.texEval.size]
         lightCoef = texParam[m.texEval.size:].reshape(9, 3)
         
-        texture = generateTexture(fitting, texParam2, m)
+        texture = generateTexture(shape, texParam2, m)
         
-        renderObj.updateVertexBuffer(np.r_[fitting.T, texture.T])
+        renderObj.updateVertexBuffer(np.r_[shape.T, texture.T])
         renderObj.resetFramebufferObject()
         renderObj.render()
         rendering, pixelCoord, pixelFaces, pixelBarycentricCoords = renderObj.grabRendering(return_info = True)
         
         plt.figure()
         plt.imshow(rendering)
-        break
         
         '''
-        Optimization
+        Optimization over shape, texture, and lighting
         '''
+        # Need to do
+        break

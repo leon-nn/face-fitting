@@ -12,18 +12,10 @@ Subpackages
 Submodules
 ----------
 
-mm\.misc module
----------------
+mm\.deprecated module
+---------------------
 
-.. automodule:: mm.misc
-    :members:
-    :undoc-members:
-    :show-inheritance:
-
-mm\.mmOld module
-----------------
-
-.. automodule:: mm.mmOld
+.. automodule:: mm.deprecated
     :members:
     :undoc-members:
     :show-inheritance:

@@ -1,72 +1,66 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-Created on Fri Feb 16 15:15:06 2018
-
-@author: leon
-"""
-
 import numpy as np
 from .transform import rotMat2angle, sh9
 from sklearn.preprocessing import normalize
 
-def generateFace(P, m, ind = None):
+def generateFace(param, model, ind = None):
     """
     Generate vertices based off of eigenmodel and vector of parameters
     """
     # Shape eigenvector coefficients
-    idCoef = P[: m.idEvec.shape[2]]
-    expCoef = P[m.idEvec.shape[2]: m.idEvec.shape[2] + m.expEvec.shape[2]]
+    idCoef = param[: model.numId]
+    expCoef = param[model.numId: model.numId + model.numExp]
     
     # Rotation Euler angles, translation vector, scaling factor
-    R = rotMat2angle(P[m.idEvec.shape[2] + m.expEvec.shape[2]:][:3])
-    t = P[m.idEvec.shape[2] + m.expEvec.shape[2]:][3: 6]
-    s = P[m.idEvec.shape[2] + m.expEvec.shape[2]:][6]
+    R = rotMat2angle(param[model.numId + model.numExp:][:3])
+    t = param[model.numId + model.numExp:][3: 6]
+    s = param[model.numId + model.numExp:][6]
     
     # The eigenmodel, before rigid transformation and scaling
     if ind is None:
-        model = m.idMean + np.tensordot(m.idEvec, idCoef, axes = 1) + np.tensordot(m.expEvec, expCoef, axes = 1)
+        model = model.idMean + np.tensordot(model.idEvec, idCoef, axes = 1) + np.tensordot(model.expEvec, expCoef, axes = 1)
     else:
-        model = m.idMean[:, ind] + np.tensordot(m.idEvec[:, ind, :], idCoef, axes = 1) + np.tensordot(m.expEvec[:, ind, :], expCoef, axes = 1)
+        model = model.idMean[:, ind] + np.tensordot(model.idEvec[:, ind, :], idCoef, axes = 1) + np.tensordot(model.expEvec[:, ind, :], expCoef, axes = 1)
     
     # After rigid transformation and scaling
     return s*np.dot(R, model) + t[:, np.newaxis]
 
-def generateTexture(vertexCoord, texParam, m):
+def generateTexture(vertexCoord, texParam, model):
             
-    texCoef = texParam[:m.texEval.size]
-    lightCoef = texParam[m.texEval.size:].reshape(9, 3)
+    texCoef = texParam[:model.texEval.size]
+    shCoef = texParam[model.texEval.size:].reshape(9, 3)
     
-    texture = m.texMean + np.tensordot(m.texEvec, texCoef, axes = 1)
+    texture = model.texMean + np.tensordot(model.texEvec, texCoef, axes = 1)
     
     # Evaluate spherical harmonics at face shape normals
-    vertexNorms = calcNormals(vertexCoord, m)
-    B = sh9(vertexNorms[:, 0], vertexNorms[:, 1], vertexNorms[:, 2])
+    vertexNorms = calcNormals(vertexCoord, model)
+    sh = sh9(vertexNorms[:, 0], vertexNorms[:, 1], vertexNorms[:, 2])
     
-    I = np.empty((3, m.numVertices))
+    I = np.empty((3, model.numVertices))
     for c in range(3):
-        I[c, :] = np.dot(lightCoef[:, c], B) * texture[c, :]
+        I[c, :] = np.dot(shCoef[:, c], sh) * texture[c, :]
     
     return I
 
-def barycentricReconstruction(texture, pixelFaces, pixelBarycentricCoords, indexData):
+def barycentricReconstruction(vertices, pixelFaces, pixelBarycentricCoords, indexData):
     pixelVertices = indexData[pixelFaces, :]
     
-    if len(texture.shape) is 1:
-        texture = texture[np.newaxis, :]
+    if len(vertices.shape) is 1:
+        vertices = vertices[np.newaxis, :]
     
-    numChannels = texture.shape[0]
+    numChannels = vertices.shape[0]
         
-    colorMat = texture[:, pixelVertices.flat].reshape((numChannels, 3, pixelFaces.size), order = 'F')
+    colorMat = vertices[:, pixelVertices.flat].reshape((numChannels, 3, pixelFaces.size), order = 'F')
     return np.einsum('ij,kji->ik', pixelBarycentricCoords, colorMat)
 
-def calcNormals(X, m):
+def calcNormals(vertices, model):
     """
     Calculate the per-vertex normal vectors for a model given shape coefficients
     """
-    faceNorm = np.cross(X[:, m.face[:, 0]] - X[:, m.face[:, 1]], X[:, m.face[:, 0]] - X[:, m.face[:, 2]], axisa = 0, axisb = 0)
+    faceNorm = np.cross(vertices[:, model.face[:, 0]] - vertices[:, model.face[:, 1]], vertices[:, model.face[:, 0]] - vertices[:, model.face[:, 2]], axisa = 0, axisb = 0)
     
-    vNorm = np.array([np.sum(faceNorm[faces, :], axis = 0) for faces in m.vertex2face])
+    vNorm = np.array([np.sum(faceNorm[faces, :], axis = 0) for faces in model.vertex2face])
     
     return normalize(vNorm)
 
@@ -167,36 +161,3 @@ def subdivide(v, f):
     fNew = np.c_[f.flatten() + facePt.shape[0] + edgePt.shape[0], edgeInd + facePt.shape[0], np.repeat(np.arange(facePt.shape[0]), 4), edgeInd.reshape((edgeInd.shape[0]//4, 4))[:, [3, 0, 1, 2]].flatten() + facePt.shape[0]] + 1
     
     return vNew, fNew
-
-def calcZBuffer(vertexCoord):
-    """
-    Assumes that the nose will have smaller z values
-    """
-    # Transpose input if necessary so that dimensions are along the columns
-    if vertexCoord.shape[0] == 3:
-        vertexCoord = vertexCoord.T
-    
-    # Given an orthographically projected 3D mesh, convert the x and y vertex coordinates to integers to represent pixel coordinates
-    vertex2pixel = vertexCoord[:, :2].astype(int)
-    
-    # Find the unique pixel coordinates from above, the first vertex they map to, and the count of vertices that map to each pixel coordinate
-    pixelCoord, pixel2vertexInd, pixelCounts = np.unique(vertex2pixel, return_index = True, return_counts = True, axis = 0)
-    
-    # Initialize the z-buffer to have as many elements as there are unique pixel coordinates
-    zBuffer = np.empty(pixel2vertexInd.size, dtype = int)
-    
-    # Loop through each unique pixel coordinate...
-    for i in range(pixel2vertexInd.size):
-        # If a given pixel coordinate only has 1 vertex, then the z-buffer will represent that vertex
-        if pixelCounts[i] == 1:
-            zBuffer[i] = pixel2vertexInd[i]
-        
-        # If a given pixel coordinate has more than 1 vertex...
-        else:
-            # Find the indices for the vertices that map to the pixel coordinate
-            candidateVertexInds = np.where((vertex2pixel[:, 0] == pixelCoord[i, 0]) & (vertex2pixel[:, 1] == pixelCoord[i, 1]))[0]
-            
-            # Of the vertices, see which one has the smallest z coordinate and assign that vertex to the pixel coordinate in the z-buffer
-            zBuffer[i] = candidateVertexInds[np.argmin(vertexCoord[2, candidateVertexInds])]
-    
-    return zBuffer, pixelCoord

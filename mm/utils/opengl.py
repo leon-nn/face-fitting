@@ -1,10 +1,20 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 from OpenGL.GL import *
 from OpenGL.GLUT import *
 import numpy as np
 
 def windowToClip(width, height, zNear, zFar):
-    """
-    Creates elements for an OpenGL-style column-based homogenous transformation matrix that maps points from window space to clip space.
+    """Creates elements for an OpenGL-style column-based orthographic transformation matrix that maps homogenous coordinates from window space to clip space.
+    
+    Args:
+        width (int): Pixel width of window/viewport
+        height (int): Pixel height of window/viewport
+        zNear (int): Nearside clipping plane
+        zFar (int): Farside clipping plane
+    
+    Returns:
+        ndarray, (16,): Vectorized transformation matrix
     """
     windowToClipMat = np.zeros(16, dtype = np.float32)
     windowToClipMat[0] = 2 / width
@@ -40,6 +50,8 @@ void main()
     fragmentFaceID = triangleID;
 }
 """
+"""str: OpenGL GLSL vertex shader
+"""
 
 fragmentShaderString = """
 #version 330
@@ -59,9 +71,38 @@ void main()
     pixelFaceID = uvec3(fragmentFaceID, 0, 0);
 }
 """
+""" str: OpenGL GLSL fragment shader
+"""
 
 class Render:
+    """OpenGL rendering class
+    
+    Attributes:
+        width (int): Pixel width of window/viewport
+        height (int): Pixel height of window/viewport
+        zNear (int): Nearside clipping plane
+        zFar (int): Farside clipping plane
+        meshData (ndarray): 3DMM vertex coordinates and RGB values, concatenated vertically
+        indexData (ndarray): 3DMM vertex indices for each triangular face
+        numVertices (int): Number of 3DMM vertices
+        numFaces (int): Number of 3DMM triangular faces
+        vertexDim (int): Dimensionality of 3DMM vertices
+        indexed (bool): Determines whether or not to do indexed OpenGL drawing
+        img (ndarray, (height, width, 1 or 3)): Optional background image for rendering
+        window (int): Instance of OpenGL GLUT context
+        shaderDict (dict): Dictionary of OpenGL shader strings
+        numStoredVertices (int): Number of 3DMM vertices stored in the VBO
+    """
     def __init__(self, width, height, meshData, indexData, indexed = False, img = None):
+        """
+        Args:
+            width (int): Pixel width of window/viewport
+            height (int): Pixel height of window/viewport
+            meshData (ndarray): 3DMM vertex coordinates and RGB values, concatenated vertically
+            indexData (ndarray): 3DMM vertex indices for each triangular face
+            indexed (bool): Determines whether or not to do indexed OpenGL drawing
+            img (ndarray, (height, width, 1 or 3)): Optional background image for rendering
+        """
         # Initialize input
         self.width = width
         self.height = height
@@ -81,6 +122,8 @@ class Render:
         self.initializeContext()
     
     def initializeContext(self):
+        """Intializes an OpenGL context for rendering.
+        """
         # You can use any means to initialize an OpenGL context (e.g. GLUT), but since we're rendering offscreen to an FBO, we don't need to bother to display, which is why we hide the GLUT window.
         glutInit()
         self.window = glutCreateWindow('Merely creating an OpenGL context...')
@@ -126,8 +169,7 @@ class Render:
         self.initializeFramebufferObject()
 
     def initializeShaders(self):
-        """
-        Compiles each shader defined in shaderDict, attaches them to a program object, and links them (i.e., creates executables that will be run on the vertex, geometry, and fragment processors on the GPU). This is more-or-less boilerplate.
+        """Compiles each shader defined in shaderDict, attaches them to a program object, and links them (i.e., creates executables that will be run on the vertex, geometry, and fragment processors on the GPU). This is more-or-less boilerplate.
         """
         shaderObjects = []
         self.shaderProgram = glCreateProgram()
@@ -160,8 +202,7 @@ class Render:
             glDeleteShader(shader)
     
     def configureShaders(self):
-        """
-        Modifies the window-to-clip space transform matrix in the vertex shader, but you can use this to configure your shaders however you'd like, of course.
+        """Modifies the window-to-clip space transform matrix in the vertex shader, but you can use this to configure your shaders however you'd like, of course.
         """
         # Grabs the handle for the uniform input from the shader
         windowToClipMatUnif = glGetUniformLocation(self.shaderProgram, "windowToClipMat")
@@ -177,8 +218,10 @@ class Render:
         glUseProgram(0)
     
     def initializeVertexBuffer(self, faceID = None):
-        """
-        Assign the triangular mesh data and the triplets of vertex indices that form the triangles (index data) to VBOs
+        """Assigns the triangular mesh data and the triplets of vertex indices that form the triangles (index data) to VBOs
+        
+        Args:
+            faceID (ndarray): Optional, an array of triangular face ID numbers for each vertex. This is only used with non-indexed OpenGL drawing, where vertices are replicated in the VBO so that each set of three vertices corresponding to a triangular face can have a vertex attribute representing the index number of the triangular face.
         """
         # Create a handle and assign the VBO for the mesh data to it
         self.shaderProgram = glGenBuffers(1)
@@ -206,6 +249,11 @@ class Render:
             glBindBuffer(GL_ARRAY_BUFFER, 0)
     
     def updateVertexBuffer(self, meshData):
+        """Updates the VBO with new 3DMM vertex coordinates and RGB colors without having to reinitialize the VBO.
+        
+        Args:
+            meshData (ndarray): 3DMM vertex coordinates and RGB values, concatenated vertically
+        """
         # Set the VAO as the currently used object in the OpenGL context
         glBindVertexArray(self.vertexArrayObject)
         
@@ -226,8 +274,7 @@ class Render:
         glBindVertexArray(0)
     
     def initializeFramebufferObject(self):
-        """
-        Create an FBO and assign a texture buffer to it for the purpose of offscreen rendering to the texture buffer
+        """Creates an FBO and assign a texture to it for the purpose of offscreen rendering. Also assigns textures to hold the barycentric coordinates and face IDs for each pixel during the rendering.
         """
         # Create a handle and assign a texture buffer to it
         renderedTexture = glGenTextures(1)
@@ -302,6 +349,8 @@ class Render:
         glBindFramebuffer(GL_FRAMEBUFFER, 0)
     
     def resetFramebufferObject(self):
+        """Erases any drawn objects from the FBO.
+        """
         # Use our initialized FBO instead of the default GLUT framebuffer
         glBindFramebuffer(GL_FRAMEBUFFER, self.framebufferObject)
         
@@ -314,8 +363,7 @@ class Render:
         glBindFramebuffer(GL_FRAMEBUFFER, 0)
     
     def initializeVertexArray(self):
-        """
-        Creates the VAO to store the VBOs for the mesh data and the index data, 
+        """Creates the VAO to store the VBOs for the mesh data and the index data and assigns the vertex attributes for the OpenGL shaders.
         """
         # Create a handle and assign a VAO to it
         self.vertexArrayObject = glGenVertexArrays(1)
@@ -357,6 +405,8 @@ class Render:
         glBindVertexArray(0)
         
     def render(self):
+        """Renders the objects defined in the VAO to the FBO.
+        """
         # Defines what shaders to use
         glUseProgram(self.shaderProgram)
         
@@ -378,6 +428,14 @@ class Render:
         glBindFramebuffer(GL_FRAMEBUFFER, 0)
     
     def grabRendering(self, return_info = False):
+        """Reads the rendered pixels from the FBO into an array.
+        
+        Args:
+            return_info (bool): Optional, can choose whether or not to return the barycentric coordinates and triangular face IDs for each pixel. You can only get this extra information when doing non-indexed OpenGL drawing. If ``False``, it only returns the rendering. If ``True``, it returns a tuple containing the rendering, the pixel coordinates where the 3DMM is drawn, the triangular face IDs for each pixel where the 3DMM is drawn, and the barycentric coordinates of the triangular face underlying each pixel where the 3DMM is drawn.
+            
+        Returns:
+            ndarray or tuple
+        """
         # Use our initialized FBO instead of the default GLUT framebuffer
         glBindFramebuffer(GL_FRAMEBUFFER, self.framebufferObject)
         

@@ -1,19 +1,22 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-Created on Fri Feb 16 11:42:30 2018
-
-@author: leon
+"""This module contains functions related to finding the optimal orthographic and perspective transforms and camera matrices to align the 3DMM with source depth maps or images. They use sparse landmark correspondences between the 3DMM and the source to find an optimal initialization.
 """
 
 import numpy as np
 from ..utils.transform import rotMat2angle
 from scipy.linalg import rq
 from scipy.optimize import least_squares
-    
+
 def initialRegistration(A, B):
-    """
-    Find the rotation matrix R, translation vector t, and scaling factor s to reconstruct the 3D vertices of the target B from the source A as B' = s*R*A.T + t.
+    """Performs the Kabsch algorithm to find the optimal similarity transform parameters between 3D-3D landmark correspondences.
+    
+    Args:
+        A (ndarray): Set of source vertices
+        B (ndarray): Set of target vertices such at B' = s*R*A.T + t
+    
+    Returns:
+        ndarray, (7,): The optimal Euler angles, the 3D translation vector, and the scaling factor
     """
     
     # Make sure the x, y, z vertex coordinates are along the columns
@@ -43,13 +46,22 @@ def initialRegistration(A, B):
     t = -s*np.dot(R, muA) + muB
     
     # Find Euler angles underlying rotation matrix
-    angle = rotMat2angle(R)
+    angles = rotMat2angle(R)
     
-    return np.r_[angle, t, s]
+    return np.r_[angles, t, s]
 
-def estCamMat(lm2D, lm3D, cam = 'perspective'):
-    """
-    Direct linear transform / "Gold Standard Algorithm" to estimate camera matrix from 2D-3D landmark correspondences. The input 2D and 3D landmark NumPy arrays have XY and XYZ coordinates in each row, respectively. For an orthographic camera, the algebraic and geometric errors are equivalent, so there is no need to do the least squares step at the end. The orthographic camera returns a 2x4 camera matrix, since the last row is just [0, 0, 0, 1].
+def estimateCamMat(lm2D, lm3D, cam = 'orthographic'):
+    """Estimates camera matrix from 2D-3D landmark correspondences using the Direct linear transform / "Gold Standard Algorithm".
+    
+    For an orthographic camera, the algebraic and geometric errors in the algorithm are equivalent, so there is no need to do the least squares step at the end. The orthographic camera returns a 2x4 camera matrix, since the third row is just [0, 0, 0, 1].
+    
+    Args:
+        lm2D (ndarray, (n, 2)): landmark x, y coordinates in an image
+        lm3D (ndarray, (n, 3)): landmark x, y, z coordinates in the 3DMM
+        cam (string): 'perspective' or 'orthographic' to determine the type of camera projection matrix to return
+    
+    Returns:
+        ndarray: Camera projection matrix, (2, 4) if 'orthrographic', (3, 4) if 'perspective'
     """
     # Normalize landmark coordinates; preconditioning
     numLandmarks = lm2D.shape[0]
@@ -57,7 +69,6 @@ def estCamMat(lm2D, lm3D, cam = 'perspective'):
     c2D = np.mean(lm2D, axis = 0)
     uvCentered = lm2D - c2D
     s2D = np.linalg.norm(uvCentered, axis = 1).mean()
-    
     
     c3D = np.mean(lm3D, axis = 0)
     xyzCentered = lm3D - c3D
@@ -79,49 +90,6 @@ def estCamMat(lm2D, lm3D, cam = 'perspective'):
         
         # Solve linear system and de-normalize
         p8 = np.linalg.lstsq(A, x.flatten())[0].reshape(2, 4)
-        
-#        K, R = rq(p8[:, :3], mode = 'economic')
-#        R = np.vstack((R[0, :], R[1, :], np.cross(R[0, :], R[1, :])))
-#        angles = rotMat2angle(R)
-#        param = np.r_[K[0, 0], K[0, 1], K[1, 1], angles, p8[:, 3]]
-#        
-#        def orthographicCamMatLS(param, x, X, w):
-#            # Reconstruct the camera matrix P from the RQ decomposition
-#            K = np.array([[param[0], param[1]], [0 , param[2]]])
-#            R = rotMat2angle(param[3: 6])[:2, :]
-#            P = np.c_[K.dot(R), param[6:]]
-#            
-#            # Calculate resisduals of landmark correspondences
-#            r = x.flatten() - np.dot(X, P.T).flatten()
-#    
-#            # Calculate residuals for constraints
-#            rscale = np.fabs(param[0] - param[2])
-#            rskew = param[1]
-#    
-#            return np.r_[w[0] * r, w[1] * rscale, w[2] * rskew]
-#            
-#        def orthographicCamMat(param, x, X, w):
-#            # Reconstruct the camera matrix P from the RQ decomposition
-#            K = np.array([[param[0], param[1]], [0 , param[2]]])
-#            R = rotMat2angle(param[3: 6])[:2, :]
-#            P = np.c_[K.dot(R), param[6:]]
-#            
-#            # Calculate resisduals of landmark correspondences
-#            r = x.flatten() - np.dot(X, P.T).flatten()
-#    
-#            # Calculate costs
-#            Elan = np.dot(r, r)
-#            Escale = np.square(np.fabs(param[0]) - np.fabs(param[2]))
-#            Eskew = np.square(param[1])
-#    
-#            return w[0] * Elan + w[1] * Escale + w[2] * Eskew
-#        
-#        param = minimize(orthographicCamMat, param, args = (x, X, (5, 1, 1)))
-#        param = least_squares(orthographicCamMatLS, param, args = (x, X, (1, 1, 1)), bounds = (np.r_[0, 0, 0, -np.inf*np.ones(5)], np.inf))
-#        K = np.array([[param.x[0], param.x[1]], [0 , param.x[2]]])
-#        R = rotMat2angle(param.x[3: 6])[:2, :]
-#        p8 = np.c_[K.dot(R), param.x[6:]]
-        
         Pnorm = np.vstack((p8, np.array([0, 0, 0, 1])))
         P = Tinv.dot(Pnorm).dot(U)
         
@@ -157,16 +125,27 @@ def estCamMat(lm2D, lm3D, cam = 'perspective'):
         
         return P
 
-def splitCamMat(P, cam = 'perspective'):
-    """
+def splitCamMat(P, cam = 'orthographic'):
+    """Splits the camera projection matrix into relevant intrinsic and extrinsic parameters.
+    
+    Args:
+        P (ndarray): A camera projection matrix
+        cam (string): 'perspective' or 'orthographic' to determine how to split the camera projection matrix
+    
+    Returns:
+        (tuple): tuple containing:
+            
+            K (ndarray (1,) or (3, 3)): orthographic scale parameter or perspective intrinsic camera matrix
+            angles (ndarray (3,)): Euler angles
+            t (ndarray (2,)): translation vector
     """
     if cam == 'orthographic':
         # Extract params from orthographic projection matrix
         R1 = P[0, 0: 3]
         R2 = P[1, 0: 3]
-        st = np.r_[P[0, 3], P[1, 3]]
+        t = np.r_[P[0, 3], P[1, 3]]
         
-        s = (np.linalg.norm(R1) + np.linalg.norm(R2)) / 2
+        K = (np.linalg.norm(R1) + np.linalg.norm(R2)) / 2
         r1 = R1 / np.linalg.norm(R1)
         r2 = R2 / np.linalg.norm(R2)
         r3 = np.cross(r1, r2)
@@ -182,16 +161,16 @@ def splitCamMat(P, cam = 'perspective'):
             R = U.dot(V)
         
         # Remove scale from translations
-        t = st / s
+#        t = t / K
         
-        angle = rotMat2angle(R)
+        angles = rotMat2angle(R)
         
-        return s, angle, st
+        return K, angles, t
     
     elif cam == 'perspective':
         # Get inner parameters from projection matrix via RQ decomposition
         K, R = rq(P[:, :3], mode = 'economic')
-        angle = rotMat2angle(R)
+        angles = rotMat2angle(R)
         t = np.linalg.inv(K).dot(P[:, -1])
         
-        return K, angle, t
+        return K, angles, t

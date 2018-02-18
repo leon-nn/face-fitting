@@ -1,10 +1,5 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-Created on Fri Feb 16 18:00:26 2018
-
-@author: leon
-"""
 from mm.utils.opengl import Render
 from mm.utils.io import importObj
 from mm.utils.transform import rotMat2angle

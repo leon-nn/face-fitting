@@ -1,15 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-Created on Fri Feb 16 11:46:23 2018
-
-@author: leon
-"""
 import numpy as np
-# For computing eigenvalues and eigenvectors via eigsh
 from scipy.sparse.linalg import eigsh
 
-#@jit
 def PCA(data, numPC = 80):
     """
     Return the top principle components of some data. Input (1) the data as a 2D NumPy array, where the observations are along the rows and the data elements of each observation are along the columns, and (2) the number of principle components (numPC) to keep.
