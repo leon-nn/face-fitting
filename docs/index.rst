@@ -69,6 +69,7 @@ If you are having issues, please let us know. You can also email me: leonnguyen9
    :maxdepth: 2
    :caption: Contents:
    
+   bin
    missing
    references
 
